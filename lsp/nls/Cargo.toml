@@ -1,41 +1,59 @@
 [package]
 name = "nickel-lang-lsp"
-version = "0.3.1"
-authors = ["Nickel team"]
-license = "MIT"
 readme = "README.md"
 description = "NLS: A language server for the Nickel configuration language."
-repository = "https://github.com/tweag/nickel"
-keywords = ["nickel", "configuration", "language", "lsp"]
-edition = "2018"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
 
 [[bin]]
 name = "nls"
 path = "src/main.rs"
 
+[features]
+default = ["format"]
+format = ["nickel-lang-core/format"]
+
+[[bench]]
+name = "main"
+harness = false
+
 [build-dependencies]
-lalrpop = "0.19.6"
+lalrpop.workspace = true
 
 [dependencies]
-lalrpop-util = "0.19.6"
-codespan = "0.11"
-codespan-reporting = "0.11"
-codespan-lsp = "0.11"
-serde = { version = "1.0.137", features = ["derive"] }
-serde_json = "1.0.81"
-structopt = "0.3"
-regex = "1.5"
-
-lsp-server = "0.6"
-lsp-types = "0.88"
-log = "0.4"
-env_logger = "0.9"
-anyhow = "1.0"
-nickel-lang = {path = "../../", version = "0.3.1"}
-derive_more = "0.99"
-lazy_static = "1"
-csv = "1"
+anyhow.workspace = true
+bincode.workspace = true
+clap = { workspace = true, features = ["derive"] }
+codespan-reporting.workspace = true
+codespan.workspace = true
+crossbeam.workspace = true
+csv.workspace = true
+derive_more.workspace = true
+env_logger.workspace = true
+lalrpop-util.workspace = true
+lazy_static.workspace = true
+log.workspace = true
+lsp-server.workspace = true
+lsp-types.workspace = true
+nickel-lang-core.workspace = true
+regex.workspace = true
+scopeguard.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-pretty_assertions = "1.2.1"
-assert_matches = "1.5.0"
+assert_cmd.workspace = true
+assert_matches.workspace = true
+criterion.workspace = true
+glob = "0.3.1"
+insta.workspace = true
+lsp-harness.workspace = true
+nickel-lang-utils.workspace = true
+pretty_assertions.workspace = true
+test-generator.workspace = true

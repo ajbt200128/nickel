@@ -1,4 +1,4 @@
-# test: pass
+# test = 'pass'
 
 # Example of simple custom contract, parametrized by a first argument.
 # In practice, for this kind of simple predicate, one should rather use
@@ -7,7 +7,8 @@ let EqualsTo = fun reference_value label value =>
   if reference_value == value then
     value
   else
-    contract.blame label in
+    std.contract.blame label
+in
 
 let AlwaysTrue = EqualsTo true in
 let AlwaysFalse = EqualsTo false in

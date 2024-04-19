@@ -1,0 +1,7 @@
+---
+source: cli/tests/snapshot/main.rs
+expression: out
+---
+# `Hello`
+
+World\!

@@ -1,0 +1,20 @@
+---
+source: lsp/nls/tests/main.rs
+expression: output
+---
+[a, b, config, std]
+[foo, verified, version]
+[foo, verified, version]
+[foo, verified, version]
+[really]
+[really]
+[foo, really, verified, version]
+["has a space", lalala]
+[falala]
+[field]
+[field]
+[subfield]
+[foo]
+[field]
+[field]
+

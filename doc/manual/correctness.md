@@ -4,10 +4,11 @@ slug: correctness
 
 # Correctness in Nickel
 
-One of the main value propositions of Nickel is to make configurations
-programmable. However, an equally important aim is to help developers write
-*correct* configurations. Our definition of correctness includes, but is not
-restricted to, the following properties:
+One of the main value propositions of Nickel is to make configurations modular,
+concise, and reusable, thus making them easier to write and to maintain.
+However, an equally important aim is to help developers write *correct*
+configurations. Our definition of correctness includes, but is not restricted
+to, the following properties:
 
 1. Evaluation of nonsensical expressions is not permitted. For example, trying
    to add a number to a string, or calling a value which is not a function.
@@ -36,12 +37,12 @@ benefits for many kinds of application. However, the case of an interpreted
 configuration language is somewhat less clear-cut.
 
 For pure configuration code, consisting predominantly of data, static typing is
-perhaps less useful than in other kinds of application. Firstly, a configuration
-is a terminating program run once on fixed inputs, so basic type errors will
-show up at runtime. Secondly, for data validation, static types are too rigid.
-For example, statically checking that an expression will always evaluate to a
-valid port number requires very advanced machinery. On the other hand, checking
-this property at runtime is trivial.
+perhaps less useful. Firstly, a configuration is a terminating program run once
+on fixed inputs, so basic type errors will show up right away, even without
+static typing. Secondly, for data validation, static types are too rigid. For
+example, statically checking that an expression will always evaluate to a valid
+port number requires very advanced machinery. On the other hand, checking this
+property at runtime is trivial.
 
 Nevertheless, those who have faced puzzling [dynamic type errors], may desire
 something better. Bare dynamic typing is prone to irrelevant error messages,
@@ -66,44 +67,40 @@ an informative error message.
 
 A wide range of properties can be checked for, such as:
 
-- that an expression evaluates to a number,
-- that some field `foo` evaluates to the same value as some other field `bar` of
+- an expression evaluates to a number,
+- some field `foo` evaluates to the same value as some other field `bar` of
   the same configuration,
-- that an expression evaluates to a record with at least one field, `port`,
+- an expression evaluates to a record with at least one field, `port`,
   whose value is a valid port number,
-- that a given expression is a function mapping numbers to numbers
+- an expression is a function mapping numbers to numbers
 - etc.
 
-Types and contracts are enforced in a similar way, via annotations.
+Types and contracts are enforced similarly, via annotations.
 
 Type annotations are introduced with `:`. For example:
 
-```text
-$ nickel repl
-
-nickel> 1 + 1.5 : Num
+```nickel #repl
+> 1 + 1.5 : Number
 2.5
 
-nickel> let f : Num -> Num = fun x => x + 1
-nickel> f 0
+> let f : Number -> Number = fun x => x + 1
+
+> f 0
 1
 
-nickel> "not a Num" : Num
+> "not a Number" : Number
 error: incompatible types
-[..]
+[...]
 ```
 
 Contract annotations are introduced with `|`. For example:
 
-```text
-$ nickel repl
-
-nickel> let GreaterThan = fun bound =>
-  contract.from_predicate (fun val => val >= bound) in
--1 | GreaterThan 10
-
-error: contract broken by value
-[..]
+```nickel #repl
+> let GreaterThan = fun bound =>
+    std.contract.from_predicate (fun val => val >= bound) in
+  -1 | GreaterThan 10
+error: contract broken by a value
+[...]
 ```
 
 Both type and contract annotations support the same syntax for properties on
@@ -122,40 +119,59 @@ practical differences between types and contracts.
 Suppose we need a function to convert an array of key-value pairs into an array
 of keys and an array of values. Let's call it `split`:
 
-```text
-nickel> split [{key = "foo", value = 1}, {key = "bar", value = 2}]
-{keys = ["foo", "bar"], values = [1, 2]}
+```nickel #repl
+#hide-range{1-14}
 
-nickel> split [
-  {key = "firewall", value = true},
-  {key = "grsec", value = false},
-  {key = "iptables", value = true},
-]
-{ keys: ["firewall", "grsec", "iptables"], values [true, false, true] }
+> let split = fun pairs =>
+    std.array.fold_right
+      (
+        fun pair acc =>
+          {
+            # problem: the correct expression to use is [pair.key]
+            keys = acc.keys @ [pair.key],
+            values = acc.values @ [pair.value],
+          }
+      )
+      { keys = [], values = [] }
+      pairs
+
+> split [{key = "foo", value = 1}, {key = "bar", value = 2}]
+{ keys = [ "bar", "foo" ], values = [ 2, 1 ], }
+
+> split [
+    {key = "firewall", value = true},
+    {key = "grsec", value = false},
+    {key = "iptables", value = true},
+  ]
+{ keys = [ "iptables", "grsec", "firewall" ], values = [ true, false, true ], }
 ```
 
-Here is the definition for `split`, but with a twist. On line 6 we accidentally
+Here is the definition for `split`, but with a twist. On line 9 we accidentally
 try to pass the string `pair.key` to the concatenation operation `@`, without
-first wrapping it in an array:
+first wrapping it in an array (note that in real life, you should rather use
+`std.array.append`):
 
 ```nickel
 # lib.ncl
 {
   split = fun pairs =>
-    array.fold_right (fun pair acc =>
-      {
-        # problem: the right expression to use is [pair.key]
-        keys = acc.keys @ pair.key,
-        values = acc.values @ [pair.value],
-      })
-      {keys = [], values = []}
+    std.array.fold_right
+      (
+        fun pair acc =>
+          {
+            # problem: the correct expression to use is [pair.key]
+            keys = acc.keys @ pair.key,
+            values = acc.values @ [pair.value],
+          }
+      )
+      { keys = [], values = [] }
       pairs
 }
 ```
 
 We call `split` from our configuration file:
 
-```nickel
+```nickel #parse
 # config.ncl
 let {split} = import "lib.ncl" in
 split [{key = "foo", value = 1}, {key = "bar", value = 2}]
@@ -175,9 +191,9 @@ elements of the same type as the input `value`s.
 An idiomatic way to express these properties in Nickel is to use the following
 annotation:
 
-```nickel
-forall a. Array {key: Str, value: a}
-          -> {keys: Array Str, values: Array a}
+```nickel #no-check
+forall a. Array {key: String, value: a}
+          -> {keys: Array String, values: Array a}
 ```
 
 Where `forall a.` means that `a` can be any type, but that the `a` in the input
@@ -190,8 +206,8 @@ using contract and type annotations.
 
 `split` can be given a contract annotation as follows:
 
-```nickel
-split | forall a. Array {key: Str, value: a} -> {keys: Array Str, values: Array a} = # etc.
+```nickel #no-check
+split | forall a. Array {key: String, value: a} -> {keys: Array String, values: Array a} = # etc.
 ```
 
 Contract annotations are checked at runtime. At this point functions are
@@ -199,8 +215,8 @@ essentially opaque values which must be passed an argument in order to evaluate
 further. As a result, `split`'s contract will only be checked when the function
 is actually applied to an argument. When this happens, the contract checks that:
 
-1. the provided argument satisfies the `Array {key: Str, value: a}` contract,
-2. the return value satisfies the `{keys: Array Str, values: Array a}` contract.
+1. the provided argument satisfies the `Array {key: String, value: a}` contract,
+2. the return value satisfies the `{keys: Array String, values: Array a}` contract.
 
 Those checks produce useful error message when the caller passes arguments of
 the wrong type, or if function were to return a value of the wrong type. But the
@@ -210,25 +226,24 @@ function contract for `split` has the following limitations:
   is not called - e.g. when part of a library - no checks take place. This can
   be tested by evaluating or typechecking `lib.ncl` and observing that no errors
   are raised.
-- Only the input value and the return value are checked against the contract. If
+- The contract only checks the input and the return value. If
   `split` mishandles an intermediate value - as indeed it currently does - then
   the caller is left with only unhelpful dyamic type errors. For example,
   evaluating `config.ncl` reports the following error:
 
   ```text
-  error: type error
-    ┌─ /path/to/lib.ncl:6:27
+  error: dynamic type error
+    ┌─ lib.ncl:8:33
     │
-  6 │         keys = acc.keys @ pair.key,
-    │                           ^^^^^^^^ this expression has type Str, but Array was expected
+  8 │               keys = acc.keys @ pair.key,
+    │                                 ^^^^^^^^ this expression has type String, but Array was expected
     │
-    ┌─ /path/to/config.ncl:2:41
+    ┌─ <repl-input-1:1:77
     │
-  2 │ split [{key = "foo", value = 1}, {key = "bar", value = 2}]
-    │                                         ----- evaluated to this
+  1 │ let {split} = import "error.ncl" in split [{key = "foo", value = 1}, {key = "bar", value = 2}]
+    │                                                                             ----- evaluated to this
     │
-    = @, 2nd operand
-
+    = (@) expects its 2nd argument to be a Array
   ```
 
   From the caller's perspective, this is not a particularly helpful error. For
@@ -240,18 +255,18 @@ function contract for `split` has the following limitations:
 #### Using a type annotation
 
 `split` is a generic function operating on builtin types, which makes it a good
-candidate for static typing. The presence of static types here will help ensure
+candidate for static typing. The usage of typechecking here will help ensure
 that:
 
 1. the property expressed in the annotation above holds for all possible values
    of the type parameter `a`,
 2. all expressions in the body of `split` also typecheck,
-3. errors are reported before any code is executed.
+3. errors are reported before any code is run.
 
 `split` can be given a type annotation as follows:
 
-```nickel
-split : forall a. Array {key: Str, value: a} -> {keys: Array Str, values: Array a} = # etc.
+```nickel #no-check
+split : forall a. Array {key: String, value: a} -> {keys: Array String, values: Array a} = # etc.
 ```
 
 Type annotations also give rise to contracts, which means that even if `split`'s
@@ -264,17 +279,19 @@ now reports an error:
 
 ```text
 error: incompatible rows declaration
-   ┌─ /path/to/lib.ncl:10:7
+   ┌─ lib.ncl:13:9
    │
-10 │       pairs
-   │       ^^^^^ this expression
+13 │         pairs
+   │         ^^^^^ this expression
    │
-[..]
-error: While typing field `key`: incompatible types
- = The type of the expression was expected to be `Array Str`
- = The type of the expression was inferred to be `Str`
- = These types are not compatible
+   = Expected an expression of a record type with the row `key: Array _a`
+   = Found an expression of a record type with the row `key: String`
+   = Could not match the two declarations of `key`
 
+error: while typing field `key`: incompatible types
+ = Expected an expression of type `Array _a`
+ = Found an expression of type `String`
+ = These types are not compatible
 ```
 
 The error says that the `key` field of the elements of `pairs` is a string, but
@@ -304,8 +321,8 @@ level is valid:
 ```nickel
 # lib.ncl
 {
-  OptLevel = contract.from_predicate (fun value =>
-    array.elem value ["O0", "O1", "O2", "O3"])
+  OptLevel = std.contract.from_predicate (fun value =>
+    std.array.elem value ["O0", "O1", "O2", "O3"])
 }
 ```
 
@@ -320,12 +337,12 @@ As in the previous example, we will consider the differences arising when using
 
 If we write:
 
-```nickel
+```nickel #parse
 # config.ncl
 let {OptLevel} = import "lib.ncl" in
 let level = 1 in
 {
-  opt_level : OptLevel = "A" ++ string.from_num level,
+  opt_level : OptLevel = "A" ++ std.string.from_number level,
 }
 ```
 
@@ -333,19 +350,19 @@ We get:
 
 ```text
 error: incompatible types
-  ┌─ /path/to/config.ncl:4:26
+  ┌─ config.ncl:4:26
   │
-4 │   opt_level : OptLevel = "A" ++ string.from_num level,
-  │                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this expression
+4 │   opt_level : OptLevel = "A" ++ std.string.from_number level,
+  │                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this expression
   │
-  = The type of the expression was expected to be `OptLevel`
-  = The type of the expression was inferred to be `Str`
-  = These types are not compatible
+  = Expected an expression of type `OptLevel` (a contract)
+  = Found an expression of type `String`
+  = Static types and contracts are not compatible
 ```
 
 Because `OptLevel` is a custom predicate, the typechecker is unable to check
-whether `"A"` concatenated with `string.from_num 1"` is a valid value. For that
-matter, even `"O1" : OptLevel` doesn't typecheck.
+whether `"A"` concatenated with `std.string.from_number 1"` is a valid value.
+For that matter, even `"O1" : OptLevel` doesn't typecheck.
 
 It *is* possible to build values which the typechecker will accept as valid
 `OptLevel`s, but doing so creates restrictions on how the value can be used
@@ -359,28 +376,25 @@ relevant section in the typing documentation].
 For validating custom properties such as `OptLevel`, a contract is the way to
 go:
 
-```nickel
+```nickel #parse
 # config.ncl
 let {OptLevel} = import "lib.ncl" in
 let level = 4 in
 {
-  opt_level | OptLevel = "A" ++ string.from_num level,
+  opt_level | OptLevel = "A" ++ std.string.from_number level,
 }
 ```
 
 This correctly reports an error, and even gives the computed offending value:
 
 ```text
-error: contract broken by a value.
-  ┌─ :1:1
+error: contract broken by the value of `opt_level`
+  ┌─ config.ncl:4:26
   │
-1 │ OptLevel
-  │ -------- expected type
-  │
-  ┌─ /path/to/config.ncl:4:26
-  │
-3 │   opt_level | OptLevel = "A" ++ string.from_num level,
-  │                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^ applied to this expression
+4 │   opt_level | OptLevel = "A" ++ std.string.from_number level,
+  │               --------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ applied to this expression
+  │               │
+  │               expected type
   │
   ┌─ <unknown> (generated by evaluation):1:1
   │

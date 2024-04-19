@@ -16,6 +16,11 @@
       url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    topiary = {
+      url = "github:tweag/topiary";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nix-input.url = "github:nixos/nix";
   };
 
   nixConfig = {
@@ -30,6 +35,8 @@
     , pre-commit-hooks
     , rust-overlay
     , crane
+    , topiary
+    , nix-input
     }:
     let
       SYSTEMS = [
@@ -47,36 +54,9 @@
       forEachRustChannel = fn: builtins.listToAttrs (builtins.map fn RUST_CHANNELS);
 
       cargoTOML = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+      cargoLock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
 
-      version = "${cargoTOML.package.version}_${builtins.substring 0 8 self.lastModifiedDate}_${self.shortRev or "dirty"}";
-
-      customOverlay = final: prev: {
-        # The version of `wasm-bindgen` CLI *must* be the same as the `wasm-bindgen` Rust dependency in `Cargo.toml`.
-        # The definition of `wasm-bindgen-cli` in Nixpkgs does not allow overriding directly the attrset passed to `buildRustPackage`.
-        # We instead override the attrset that `buildRustPackage` generates and passes to `mkDerivation`.
-        # See https://discourse.nixos.org/t/is-it-possible-to-override-cargosha256-in-buildrustpackage/4393
-        wasm-bindgen-cli = prev.wasm-bindgen-cli.overrideAttrs (oldAttrs:
-          let
-            wasmBindgenCargoVersion = cargoTOML.dependencies.wasm-bindgen.version;
-            # Remove the pinning `=` prefix of the version
-            wasmBindgenVersion = builtins.substring 1 (builtins.stringLength wasmBindgenCargoVersion) wasmBindgenCargoVersion;
-          in
-          rec {
-            pname = "wasm-bindgen-cli";
-            version = wasmBindgenVersion;
-
-            src = final.fetchCrate {
-              inherit pname version;
-              sha256 = "sha256-+PWxeRL5MkIfJtfN3/DjaDlqRgBgWZMa6dBt1Q+lpd0=";
-            };
-
-            cargoDeps = oldAttrs.cargoDeps.overrideAttrs (final.lib.const {
-              # This `inherit src` is important, otherwise, the old `src` would be used here
-              inherit src;
-              outputHash = "sha256-n3Z/jdw4CZvqixnEQX0mS/Fs2ocskLM/s7nt+pd4hPA=";
-            });
-          });
-      };
+      inherit (cargoTOML.workspace.package) version;
 
     in
     flake-utils.lib.eachSystem SYSTEMS (system:
@@ -85,12 +65,35 @@
         inherit system;
         overlays = [
           (import rust-overlay)
-          customOverlay
+          # gnulib tests in diffutils fail for musl arm64, cf. https://github.com/NixOS/nixpkgs/pull/241281
+          (final: prev: {
+            diffutils =
+              if !(final.stdenv.hostPlatform.isMusl && final.stdenv.hostPlatform.isAarch64) then
+                prev.diffutils
+              else
+                prev.diffutils.overrideAttrs (old: {
+                  postPatch = ''
+                    sed -i 's:gnulib-tests::g' Makefile.in
+                  '';
+                });
+          })
         ];
+        config.allowUnfreePredicate = pkg: builtins.elem (pkg.pname or "") [ "terraform" ];
       };
 
+      wasm-bindgen-cli =
+        let
+          wasmBindgenCargoVersions = builtins.map ({ version, ... }: version) (builtins.filter ({ name, ... }: name == "wasm-bindgen") cargoLock.package);
+          wasmBindgenVersion = assert builtins.length wasmBindgenCargoVersions == 1; builtins.elemAt wasmBindgenCargoVersions 0;
+        in
+        pkgs.wasm-bindgen-cli.override {
+          version = wasmBindgenVersion;
+          hash = "sha256-f/RK6s12ItqKJWJlA2WtOXtwX4Y0qa8bq/JHlLTAS3c=";
+          cargoHash = "sha256-3vxVI0BhNz/9m59b+P2YEIrwGwlp7K3pyPKt4VqQuHE=";
+        };
+
       # Additional packages required to build Nickel on Darwin
-      missingSysPkgs =
+      systemSpecificPkgs =
         if pkgs.stdenv.isDarwin then
           [
             pkgs.darwin.apple_sdk.frameworks.Security
@@ -100,6 +103,10 @@
           [ ];
 
       mkRust =
+        let
+          inherit (pkgs.stdenv) hostPlatform;
+          inherit (pkgs.rust) toRustTarget;
+        in
         { rustProfile ? "minimal"
         , rustExtensions ? [
             "rust-src"
@@ -108,18 +115,19 @@
             "clippy"
           ]
         , channel ? "stable"
-        , target ? pkgs.rust.toRustTarget pkgs.stdenv.hostPlatform
+        , targets ? [ (toRustTarget hostPlatform) ]
+            ++ pkgs.lib.optional (!hostPlatform.isMacOS) (toRustTarget pkgs.pkgsMusl.stdenv.hostPlatform)
         }:
         if channel == "nightly" then
           pkgs.rust-bin.selectLatestNightlyWith
             (toolchain: toolchain.${rustProfile}.override {
               extensions = rustExtensions;
-              targets = [ target ];
+              inherit targets;
             })
         else
           pkgs.rust-bin.${channel}.latest.${rustProfile}.override {
             extensions = rustExtensions;
-            targets = [ target ];
+            inherit targets;
           };
 
       # A note on check_format: the way we invoke rustfmt here works locally but fails on CI.
@@ -133,9 +141,9 @@
             enable = true;
             # Excluded because they are generated by Node2nix
             excludes = [
-              "lsp/client-extension/default.nix"
-              "lsp/client-extension/node-env.nix"
-              "lsp/client-extension/node-packages.nix"
+              "lsp/vscode-extension/default.nix"
+              "lsp/vscode-extension/node-env.nix"
+              "lsp/vscode-extension/node-packages.nix"
             ];
           };
 
@@ -152,6 +160,19 @@
             ];
           };
 
+          # we could use pre-commit-hook's built-in topiary, be for now, Topiary
+          # is evolving quickly and we prefer to have the latest version.
+          # This might change once the Nickel support is stabilized.
+          topiary-latest = topiary.lib.${system}.pre-commit-hook // {
+            enable = true;
+            # Some tests are currently failing the idempotency check, and
+            # formatting is less important there. We at least want the examples
+            # as well as the stdlib to be properly formatted.
+            files = "\\.ncl$";
+            excludes = [
+              "/tests/(.+)\\.ncl$"
+            ];
+          };
         };
       };
 
@@ -165,6 +186,12 @@
           nixFilter = mkFilter ".*/tests/nix/.+\\.nix$";
           txtFilter = mkFilter ".*txt$";
           snapFilter = mkFilter ".*snap$";
+          scmFilter = mkFilter ".*scm$";
+          mdFilter = mkFilter ".*md$"; # include markdown files for checking snippets in the documentation
+          cxxFilter = mkFilter ".*(cc|hh)$";
+          importsFilter = mkFilter ".*/core/tests/integration/inputs/imports/imported/.*$"; # include all files that are imported in tests
+
+          infraFilter = mkFilter ".*/infra/.*$";
         in
         pkgs.lib.cleanSourceWith {
           src = pkgs.lib.cleanSource ./.;
@@ -178,15 +205,71 @@
               nixFilter
               txtFilter
               snapFilter
+              scmFilter
+              mdFilter
+              cxxFilter
               filterCargoSources
-            ];
+              importsFilter
+            ] && !(builtins.any (filter: filter path type) [
+              infraFilter
+            ]);
         };
+
+      # if we directly set the revision, it would invalidate the cache on every commit.
+      # instead we set a static dummy hash and edit the binary in a separate (fast) derivation.
+      dummyRev = "DUMMYREV_THIS_SHOULD_NOT_APPEAR_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+      # pad a string with the tail of another string
+      padWith = pad: str:
+        str +
+        builtins.substring
+          (builtins.stringLength str)
+          (builtins.stringLength pad)
+          pad;
+
+      # We want `nickel --version` to print the git revision that nickel
+      # was compiled from. However, putting self.shortRev in a derivation
+      # invalidates the cache on any change, even if otherwise the derivation
+      # is identical. To mitigate this, we pass an unchanging string as the
+      # revision in `NICKEL_NIX_BUILD_REV`, and then have a small wrapper that
+      # replaces that string in the output binary. On every new commit this fast
+      # derivation will have to be rebuilt, but the slow compilation of rust
+      # code will only happen on more substantial changes.
+      # This is only needed for binaries that actually make use of this
+      # information (just the cli)
+      fixupGitRevision = pkg: pkgs.stdenv.mkDerivation {
+        pname = pkg.pname + "-rev-fixup";
+        inherit (pkg) version meta;
+        src = pkg;
+        buildInputs = [ pkgs.bbe ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.autoSignDarwinBinariesHook ];
+        phases = [ "fixupPhase" ];
+        fixupPhase = ''
+          runHook preFixup
+
+          mkdir -p $out/bin
+          for srcBin in $src/bin/*; do
+            outBin="$out/bin/$(basename $srcBin)"
+            # [dirty] must have 7 characters to match dummyRev (hard coded in nickel-lang-cli)
+            # we have to pad them out to the same length as dummyRev so they fit
+            # in the same spot in the binary
+            bbe -e 's/${dummyRev}/${padWith dummyRev (self.shortRev or "[dirty]")}/' \
+              $srcBin > $outBin
+            chmod +x $outBin
+          done
+
+          runHook postFixup
+        '';
+      };
 
       # Given a rust toolchain, provide Nickel's Rust dependencies, Nickel, as
       # well as rust tools (like clippy)
       mkCraneArtifacts = { rust ? mkRust { }, noRunBench ? false }:
         let
           craneLib = crane.lib.${system}.overrideToolchain rust;
+
+          # suffixes get added via pnameSuffix
+          pname = "nickel-lang";
 
           # Customize source filtering as Nickel uses non-standard-Rust files like `*.lalrpop`.
           src = filterNickelSrc craneLib.filterCargoSources;
@@ -195,45 +278,169 @@
           cargoBuildExtraArgs = "--frozen --offline";
 
           # Build *just* the cargo dependencies, so we can reuse all of that work (e.g. via cachix) when running in CI
-          cargoArtifacts = craneLib.buildDepsOnly {
-            inherit src;
-            cargoExtraArgs = "${cargoBuildExtraArgs} --workspace";
+          cargoArtifactsDeps = craneLib.buildDepsOnly {
+            inherit pname src;
+            cargoExtraArgs = "${cargoBuildExtraArgs} --all-features";
+            # If we build all the packages at once, feature unification takes
+            # over and we get libraries with different sets of features than
+            # we would get building them separately. Meaning that when we
+            # later build them separately, it won't hit the cache. So instead,
+            # we need to build each package separately when we are collecting
+            # dependencies.
+            cargoBuildCommand = "cargoWorkspace build";
+            cargoTestCommand = "cargoWorkspace test";
+            cargoCheckCommand = "cargoWorkspace check";
+            preBuild = ''
+              cargoWorkspace() {
+                command=$(shift)
+                for packageDir in $(${pkgs.yq}/bin/tomlq -r '.workspace.members[]' Cargo.toml); do
+                  (
+                    cd $packageDir
+                    pwd
+                    cargoWithProfile $command "$@"
+                  )
+                done
+              }
+            '';
             # pyo3 needs a Python interpreter in the build environment
             # https://pyo3.rs/v0.17.3/building_and_distribution#configuring-the-python-version
-            buildInputs = [ pkgs.python3 ];
+            nativeBuildInputs = with pkgs; [ pkg-config python3 ];
+            buildInputs = with pkgs; [
+              (nix-input.packages.${system}.default.overrideAttrs
+                # SEE: https://github.com/NixOS/nix/issues/9107
+                (_: lib.optionalAttrs (system == "x86_64-darwin") {
+                  doCheck = false;
+                })
+              )
+              boost # implicit dependency of nix
+            ];
+
+            # seems to be needed for consumer cargoArtifacts to be able to use
+            # zstd mode properly
+            installCargoArtifactsMode = "use-zstd";
           };
 
-          buildPackage = pname:
-            craneLib.buildPackage {
+          env = {
+            NICKEL_NIX_BUILD_REV = dummyRev;
+          };
+
+          buildPackage = { pnameSuffix, cargoPackage ? "${pname}${pnameSuffix}", extraBuildArgs ? "", extraArgs ? { } }:
+            craneLib.buildPackage ({
               inherit
                 pname
+                pnameSuffix
                 src
+                version
                 cargoArtifacts;
 
-              cargoExtraArgs = "${cargoBuildExtraArgs} --package ${pname}";
+              cargoExtraArgs = "${cargoBuildExtraArgs} ${extraBuildArgs} --package ${cargoPackage}";
+            } // extraArgs);
+
+          # In addition to external dependencies, we build the lalrpop file in a
+          # separate derivation because it's expensive to build but needs to be
+          # rebuilt infrequently.
+          cargoArtifacts = buildPackage {
+            pnameSuffix = "-core-lalrpop";
+            cargoPackage = "${pname}-core";
+            extraArgs = {
+              cargoArtifacts = cargoArtifactsDeps;
+              src = craneLib.mkDummySrc {
+                inherit src;
+
+                # after stubbing out, reset things back just enough for lalrpop build
+                extraDummyScript = ''
+                  mkdir -p $out/core/src/parser
+                  cp ${./core/build.rs} $out/core/build.rs
+                  cp ${./core/src/parser/grammar.lalrpop} $out/core/src/parser/grammar.lalrpop
+                  # package.build gets set to a dummy file. reset it to use local build.rs
+                  # tomlq -i broken (https://github.com/kislyuk/yq/issues/130 not in nixpkgs yet)
+                  ${pkgs.yq}/bin/tomlq -t 'del(.package.build)' $out/core/Cargo.toml > tmp
+                  mv tmp $out/core/Cargo.toml
+                '';
+              };
+              # the point of this is to cache lalrpop compilation
+              doInstallCargoArtifacts = true;
+              # we need the target/ directory to be writable
+              installCargoArtifactsMode = "use-zstd";
             };
-
-
+          };
         in
-        {
-          nickel = buildPackage "nickel-lang";
-          lsp-nls = buildPackage "nickel-lang-lsp";
+        rec {
+          inherit cargoArtifacts cargoArtifactsDeps;
+          nickel-lang-core = buildPackage { pnameSuffix = "-core"; };
+          nickel-lang-cli = fixupGitRevision (buildPackage {
+            pnameSuffix = "-cli";
+            extraArgs = {
+              inherit env;
+              meta.mainProgram = "nickel";
+            };
+          });
+          lsp-nls = buildPackage {
+            pnameSuffix = "-lsp";
+            extraArgs.meta.mainProgram = "nls";
+          };
+
+          # Static building isn't really possible on MacOS because the system call ABIs aren't stable.
+          nickel-static =
+            if pkgs.stdenv.hostPlatform.isMacOS
+            then nickel-lang-cli
+            else
+            # To build Nickel and its dependencies statically we use the musl
+            # libc and clang with libc++ to build C and C++ dependencies. We
+            # tried building with libstdc++ but without success.
+              fixupGitRevision
+                (buildPackage {
+                  cargoPackage = "nickel-lang-cli";
+                  pnameSuffix = "-static";
+                  extraArgs = {
+                    inherit env;
+                    CARGO_BUILD_TARGET = pkgs.rust.toRustTarget pkgs.pkgsMusl.stdenv.hostPlatform;
+                    # For some reason, the rust build doesn't pick up the paths
+                    # to `libcxx` and `libcxxabi` from the stdenv. So we specify
+                    # them explicitly. Also, `libcxx` expects to be linked with
+                    # `libcxxabi` at the end, and we need to make the rust linker
+                    # aware of that.
+                    #
+                    # We also explicitly add `libc` because of https://github.com/rust-lang/rust/issues/89626.
+                    RUSTFLAGS = "-L${pkgs.pkgsMusl.llvmPackages.libcxx}/lib -L${pkgs.pkgsMusl.llvmPackages.libcxxabi}/lib -lstatic=c++abi -C link-arg=-lc";
+                    # Explain to `cc-rs` that it should use the `libcxx` C++
+                    # standard library, and a static version of it, when building
+                    # C++ libraries. The `cc-rs` crate is typically used in
+                    # upstream build.rs scripts.
+                    CXXSTDLIB = "static=c++";
+                    stdenv = pkgs.pkgsMusl.libcxxStdenv;
+                    doCheck = false;
+                    meta.mainProgram = "nickel";
+                  };
+                });
 
           benchmarks = craneLib.mkCargoDerivation {
-            inherit src cargoArtifacts;
+            inherit pname src version cargoArtifacts env;
 
             pnameSuffix = "-bench";
 
             buildPhaseCargoCommand = ''
-              cargo bench ${pkgs.lib.optionalString noRunBench "--no-run"}
+              cargo bench -p nickel-lang-core ${pkgs.lib.optionalString noRunBench "--no-run"}
             '';
+
+            doInstallCargoArtifacts = false;
+          };
+
+          # Check that documentation builds without warnings or errors
+          checkRustDoc = craneLib.cargoDoc {
+            inherit pname src version cargoArtifacts env;
+            inherit (cargoArtifactsDeps) nativeBuildInputs buildInputs;
+
+            RUSTDOCFLAGS = "-D warnings";
+
+            cargoExtraArgs = "${cargoBuildExtraArgs} --workspace --all-features";
 
             doInstallCargoArtifacts = false;
           };
 
           rustfmt = craneLib.cargoFmt {
             # Notice that unlike other Crane derivations, we do not pass `cargoArtifacts` to `cargoFmt`, because it does not need access to dependencies to format the code.
-            inherit src;
+            inherit pname src;
 
             cargoExtraArgs = "--all";
 
@@ -242,11 +449,8 @@
           };
 
           clippy = craneLib.cargoClippy {
-            inherit
-              src
-              cargoArtifacts;
-
-            inherit (cargoArtifacts) buildInputs;
+            inherit pname src cargoArtifacts env;
+            inherit (cargoArtifactsDeps) nativeBuildInputs buildInputs;
 
             cargoExtraArgs = cargoBuildExtraArgs;
             cargoClippyExtraArgs = "--all-features --all-targets --workspace -- --deny warnings --allow clippy::new-without-default --allow clippy::match_like_matches_macro";
@@ -254,18 +458,21 @@
         };
 
       makeDevShell = { rust }: pkgs.mkShell {
-        # Trick found in Crane's examples to get a nice dev shell
-        # See https://github.com/ipetkov/crane/blob/master/examples/quick-start/flake.nix
-        inputsFrom = builtins.attrValues (mkCraneArtifacts { inherit rust; });
+        # Get deps needed to build. Get them from cargoArtifactsDeps so we build
+        # the minimal amount possible to get there. It is a waste of time to
+        # build the cargoArtifacts, because cargo won't use them anyways.
+        inputsFrom = [ (mkCraneArtifacts { inherit rust; }).cargoArtifactsDeps ];
 
         buildInputs = [
           pkgs.rust-analyzer
           pkgs.cargo-insta
           pkgs.nixpkgs-fmt
           pkgs.nodejs
-          pkgs.node2nix
+          pkgs.yarn
+          pkgs.yarn2nix
           pkgs.nodePackages.markdownlint-cli
           pkgs.python3
+          topiary.packages.${system}.default
         ];
 
         shellHook = (pre-commit-builder { inherit rust; checkFormat = true; }).shellHook + ''
@@ -283,17 +490,20 @@
       #   - dev for checks, as the code isn't optimized, and WASM optimization
       #   takes time
       buildNickelWasm =
-        { rust ? mkRust { target = "wasm32-unknown-unknown"; }
+        { rust ? mkRust { targets = [ "wasm32-unknown-unknown" ]; }
         , profile ? "release"
         }:
         let
           # Build the various Crane artifacts (dependencies, packages, rustfmt, clippy) for a given Rust toolchain
           craneLib = crane.lib.${system}.overrideToolchain rust;
 
+          # suffixes get added via pnameSuffix
+          pname = "nickel-lang-wasm";
+
           # Customize source filtering as Nickel uses non-standard-Rust files like `*.lalrpop`.
           src = filterNickelSrc craneLib.filterCargoSources;
 
-          cargoExtraArgs = "-p nickel-repl --target wasm32-unknown-unknown --frozen --offline";
+          cargoExtraArgs = "-p nickel-wasm-repl --target wasm32-unknown-unknown --frozen --offline";
           # *  --mode no-install prevents wasm-pack from trying to download and
           #   vendor tools like wasm-bindgen, wasm-opt, etc. but use the one
           #   provided by Nix
@@ -304,34 +514,34 @@
 
           # Build *just* the cargo dependencies, so we can reuse all of that work (e.g. via cachix) when running in CI
           cargoArtifacts = craneLib.buildDepsOnly {
-            inherit
-              src
-              cargoExtraArgs;
+            inherit pname src cargoExtraArgs;
             doCheck = false;
           };
 
         in
         craneLib.mkCargoDerivation {
-          inherit cargoArtifacts src;
+          inherit pname cargoArtifacts src;
 
           buildPhaseCargoCommand = ''
-            wasm-pack build nickel-wasm-repl ${wasmPackExtraArgs}
+            WASM_PACK_CACHE=.wasm-pack-cache wasm-pack build wasm-repl ${wasmPackExtraArgs}
           '';
 
           # nickel-lang.org expects an interface `nickel-repl.wasm`, hence the
           # `ln`
           installPhaseCommand = ''
             mkdir -p $out
-            cp -r nickel-wasm-repl/pkg $out/nickel-repl
-            ln -s $out/nickel-repl/nickel_repl_bg.wasm $out/nickel-repl/nickel_repl.wasm
+            cp -r wasm-repl/pkg $out/nickel-repl
+            ln -s $out/nickel-repl/nickel_wasm_repl_bg.wasm $out/nickel-repl/nickel_repl.wasm
           '';
 
           nativeBuildInputs = [
             rust
             pkgs.wasm-pack
-            pkgs.wasm-bindgen-cli
+            wasm-bindgen-cli
             pkgs.binaryen
-          ] ++ missingSysPkgs;
+            # Used to include the git revision in the Nickel binary, for `--version`
+            pkgs.git
+          ] ++ systemSpecificPkgs;
         };
 
       buildDocker = nickel: pkgs.dockerTools.buildLayeredImage {
@@ -339,32 +549,40 @@
         tag = version;
         contents = [
           nickel
-          pkgs.bashInteractive
         ];
         config = {
-          Cmd = "bash";
+          Entrypoint = pkgs.lib.getExe nickel;
+          # Labels that are recognized by GHCR
+          # See https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#labelling-container-images
+          Labels = {
+            "org.opencontainers.image.source" = "https://github.com/tweag/nickel";
+            "org.opencontainers.image.description" = "Nickel: better configuration for less";
+            "org.opencontainers.image.licenses" = "MIT";
+          };
         };
       };
 
-      # Build the Nickel VSCode extension. The extension seems to be required
-      # for the LSP to work.
-      vscodeExtension =
-        let node-package = (pkgs.callPackage ./lsp/client-extension { }).package;
-        in
-        (node-package.override rec {
-          pname = "nls-client";
-          outputs = [ "vsix" "out" ];
-          nativeBuildInputs = with pkgs; [
-            # `vsce` depends on `keytar`, which depends on `pkg-config` and `libsecret`
-            pkg-config
-            libsecret
-          ];
-          postInstall = ''
-            npm run compile
-            mkdir -p $vsix
-            echo y | npx vsce package -o $vsix/${pname}.vsix
-          '';
-        }).vsix;
+      # Build the Nickel VSCode extension
+      vscodeExtension = pkgs.mkYarnPackage {
+        pname = "vscode-nickel";
+        src = pkgs.lib.cleanSource ./lsp/vscode-extension;
+
+        buildPhase = ''
+          # yarn tries to create a .yarn file in $HOME. There's probably a
+          # better way to fix this but setting HOME to TMPDIR works for now.
+          export HOME="$TMPDIR"
+          cd deps/vscode-nickel
+          yarn --offline compile
+          yarn --offline vsce package --yarn -o $pname.vsix
+        '';
+
+        installPhase = ''
+          mkdir $out
+          mv $pname.vsix $out
+        '';
+
+        distPhase = "true";
+      };
 
       # Copy the markdown user manual to $out.
       userManual = pkgs.stdenv.mkDerivation {
@@ -376,63 +594,112 @@
         '';
       };
 
-      # Generate the stdlib documentation from `nickel doc`.
-      stdlibDoc = pkgs.stdenv.mkDerivation {
-        name = "nickel-stdlib-doc-${version}";
-        src = ./stdlib;
-        installPhase = ''
-          mkdir -p $out
-          for file in *
-          do
-            module=$(basename $file .ncl)
-            ${self.packages."${system}".default}/bin/nickel doc -f "$module.ncl" \
-              --output "$out/$module.md"
-          done
-        '';
-      };
+      # Generate the stdlib documentation from `nickel doc` as `format`.
+      stdlibDoc = format:
+        let
+          extension =
+            {
+              "markdown" = "md";
+            }."${format}" or format;
+        in
+        pkgs.stdenv.mkDerivation {
+          name = "nickel-stdlib-doc-${format}-${version}";
+          src = ./core/stdlib;
+          installPhase = ''
+            mkdir -p $out
+            for file in $(ls *.ncl | grep -v 'internals.ncl')
+            do
+              module=$(basename $file .ncl)
+              ${pkgs.lib.getExe self.packages."${system}".default} doc --format "${format}" "$module.ncl" \
+                --output "$out/$module.${extension}"
+            done
+          '';
+        };
 
+      infraShell = nickel:
+        let
+          terraform = pkgs.terraform.withPlugins (p: with p; [
+            archive
+            aws
+            github
+          ]);
+          ec2-region = "eu-north-1";
+          ec2-ami = (import "${nixpkgs}/nixos/modules/virtualisation/amazon-ec2-amis.nix").latest.${ec2-region}.aarch64-linux.hvm-ebs;
+          run-terraform = pkgs.writeShellScriptBin "run-terraform" ''
+            set -e
+            ${pkgs.lib.getExe nickel} export --output main.tf.json <<EOF
+              ((import "main.ncl") & {
+                region = "${ec2-region}",
+                nixos-ami = "${ec2-ami}",
+              }).config
+            EOF
+            ${terraform}/bin/terraform "$@"
+          '';
+
+          update-infra = pkgs.writeShellScriptBin "update-infra" ''
+            set -e
+            ${run-terraform}/bin/run-terraform init
+            GITHUB_TOKEN="$(${pkgs.gh}/bin/gh auth token)" ${run-terraform}/bin/run-terraform apply
+          '';
+        in
+        pkgs.mkShell {
+          buildInputs = [ terraform run-terraform update-infra ];
+        };
     in
     rec {
       packages = {
         inherit (mkCraneArtifacts { })
-          nickel
+          nickel-lang-core
+          nickel-lang-cli
           benchmarks
-          lsp-nls;
+          lsp-nls
+          cargoArtifacts;
         default = pkgs.buildEnv {
           name = "nickel";
-          paths = [ packages.nickel packages.lsp-nls ];
+          paths = [ packages.nickel-lang-cli packages.lsp-nls ];
+          meta.mainProgram = "nickel";
         };
         nickelWasm = buildNickelWasm { };
-        dockerImage = buildDocker packages.nickel; # TODO: docker image should be a passthru
+        dockerImage = buildDocker packages.nickel-lang-cli; # TODO: docker image should be a passthru
         inherit vscodeExtension;
         inherit userManual;
-        inherit stdlibDoc;
+        stdlibMarkdown = stdlibDoc "markdown";
+        stdlibJson = stdlibDoc "json";
+      } // pkgs.lib.optionalAttrs (!pkgs.stdenv.hostPlatform.isDarwin) {
+        inherit (mkCraneArtifacts { }) nickel-static;
+        # Use the statically linked binary for the docker image if we're not on MacOS.
+        dockerImage = buildDocker packages.nickel-static;
       };
 
       apps = {
         default = {
           type = "app";
-          program = "${packages.nickel}/bin/nickel";
+          program = pkgs.lib.getExe packages.nickel-lang-cli;
         };
       };
 
       devShells = (forEachRustChannel (channel: {
         name = channel;
-        value = makeDevShell { rust = mkRust { inherit channel; rustProfile = "default"; }; };
+        value = makeDevShell { rust = mkRust { inherit channel; rustProfile = "default"; targets = [ "wasm32-unknown-unknown" ]; }; };
       })) // {
         default = devShells.stable;
+        infra = infraShell packages.nickel-lang-cli;
       };
 
       checks = {
         inherit (mkCraneArtifacts { noRunBench = true; })
           benchmarks
           clippy
+          checkRustDoc
           lsp-nls
-          nickel
+          nickel-lang-cli
+          nickel-lang-core
           rustfmt;
-        # An optimizing release build is long: eschew optimizations in checks by
-        # building a dev profile
-        nickelWasm = buildNickelWasm { profile = "dev"; };
+        # There's a tradeoff here: "release" build is in theory longer than
+        # "dev", but it hits the cache on dependencies so in practice it is
+        # shorter. Another option would be to compile a dev dependencies version
+        # of cargoArtifacts. But that almost doubles the cache space.
+        nickelWasm = buildNickelWasm { profile = "release"; };
         inherit vscodeExtension;
         pre-commit = pre-commit-builder { };
       };

@@ -1,157 +1,98 @@
-use codespan::ByteIndex;
-use codespan_lsp::position_to_byte_index;
-use log::debug;
+use std::collections::HashSet;
+
 use lsp_server::{RequestId, Response, ResponseError};
-use lsp_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, Location, Range, ReferenceParams, Url,
-};
-use nickel_lang::position::RawSpan;
+use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, ReferenceParams};
+use nickel_lang_core::position::RawSpan;
 use serde_json::Value;
 
-use crate::{
-    diagnostic::LocationCompat,
-    linearization::interface::{TermKind, UsageState},
-    server::Server,
-    trace::{Enrich, Trace},
-};
+use crate::{cache::CacheExt, diagnostic::LocationCompat, server::Server, world::World};
+
+fn ids_to_locations(ids: impl IntoIterator<Item = RawSpan>, world: &World) -> Vec<Location> {
+    let mut spans: Vec<_> = ids.into_iter().collect();
+
+    // The sort order of our response is a little arbitrary. But we want to deduplicate, and we
+    // don't want the response to be random.
+    spans.sort_by_key(|span| (world.cache.files().name(span.src_id), span.start, span.end));
+    spans.dedup();
+    spans
+        .iter()
+        .map(|loc| Location::from_span(loc, world.cache.files()))
+        .collect()
+}
 
 pub fn handle_to_definition(
     params: GotoDefinitionParams,
     id: RequestId,
     server: &mut Server,
 ) -> Result<(), ResponseError> {
-    let file_id = server
+    let pos = server
+        .world
         .cache
-        .id_of(
-            params
-                .text_document_position_params
-                .text_document
-                .uri
-                .to_file_path()
-                .unwrap(),
-        )
-        .unwrap();
+        .position(&params.text_document_position_params)?;
 
-    let start = position_to_byte_index(
-        server.cache.files(),
-        file_id,
-        &params.text_document_position_params.position,
-    )
-    .unwrap();
+    let ident = server.world.lookup_ident_by_position(pos)?;
 
-    let locator = (file_id, ByteIndex(start as u32));
-    let linearization = server.lin_cache_get(&file_id)?;
+    let locations = server
+        .world
+        .lookup_term_by_position(pos)?
+        .map(|term| server.world.get_defs(term, ident))
+        .map(|defs| ids_to_locations(defs, &server.world))
+        .unwrap_or_default();
 
-    Trace::enrich(&id, linearization);
-
-    let Some(item) = linearization.item_at(&locator) else {
-        server.reply(Response::new_ok(id, Value::Null));
-        return Ok(())
-    };
-
-    debug!("found referencing item: {:?}", item);
-
-    let location = match item.kind {
-        TermKind::Usage(UsageState::Resolved(usage_id)) => {
-            let definition = linearization.get_item(usage_id, &server.lin_cache).unwrap();
-            if server.cache.is_stdlib_module(definition.id.file_id) {
-                // The standard library files are embedded in the executable,
-                // so we can't possibly go to their definition on disk.
-                server.reply(Response::new_ok(id, Value::Null));
-                return Ok(());
-            }
-            let RawSpan {
-                start: ByteIndex(start),
-                end: ByteIndex(end),
-                src_id,
-            } = definition.pos.unwrap();
-            let location = Location {
-                uri: Url::from_file_path(server.cache.name(src_id)).unwrap(),
-                range: Range::from_codespan(
-                    &src_id,
-                    &(start as usize..end as usize),
-                    server.cache.files(),
-                ),
-            };
-            Some(location)
-        }
-        _ => None,
-    };
-
-    debug!("referenced location: {:?}", location);
-
-    if let Some(response) = location.map(GotoDefinitionResponse::Scalar) {
-        server.reply(Response::new_ok(id, response));
+    let response = if locations.is_empty() {
+        Response::new_ok(id, Value::Null)
+    } else if locations.len() == 1 {
+        Response::new_ok(id, GotoDefinitionResponse::Scalar(locations[0].clone()))
     } else {
-        server.reply(Response::new_ok(id, Value::Null));
-    }
+        Response::new_ok(id, GotoDefinitionResponse::Array(locations))
+    };
+
+    server.reply(response);
     Ok(())
 }
 
-pub fn handle_to_usages(
+pub fn handle_references(
     params: ReferenceParams,
     id: RequestId,
     server: &mut Server,
 ) -> Result<(), ResponseError> {
-    let file_id = server
+    let pos = server
+        .world
         .cache
-        .id_of(
-            params
-                .text_document_position
-                .text_document
-                .uri
-                .to_file_path()
-                .unwrap(),
-        )
-        .unwrap();
+        .position(&params.text_document_position)?;
+    let ident = server.world.lookup_ident_by_position(pos)?;
 
-    let start = position_to_byte_index(
-        server.cache.files(),
-        file_id,
-        &params.text_document_position.position,
-    )
-    .unwrap();
+    // The "references" of a symbol are all the usages of its definitions,
+    // so first find the definitions and then find their usages.
+    let term = server.world.lookup_term_by_position(pos)?;
+    let mut def_locs = term
+        .map(|term| server.world.get_defs(term, ident))
+        .unwrap_or_default();
 
-    let locator = (file_id, ByteIndex(start as u32));
-    let linearization = server.lin_cache_get(&file_id)?;
+    // Maybe the position is pointing straight at the definition already.
+    // In that case, def_locs won't have the definition yet; so add it.
+    def_locs.extend(ident.and_then(|id| id.pos.into_opt()));
 
-    let Some(item) = linearization.item_at(&locator) else {
+    let mut usages: HashSet<_> = def_locs
+        .iter()
+        .flat_map(|id| server.world.analysis.get_usages(id))
+        .filter_map(|id| id.pos.into_opt())
+        .collect();
+
+    if params.context.include_declaration {
+        usages.extend(def_locs.iter().cloned());
+    }
+
+    for span in def_locs {
+        usages.extend(server.world.get_field_refs(span));
+    }
+
+    let locations = ids_to_locations(usages, &server.world);
+
+    if locations.is_empty() {
         server.reply(Response::new_ok(id, Value::Null));
-        return Ok(());
-    };
-
-    debug!("found referencing item: {:?}", item);
-
-    let locations: Option<Vec<Location>> = match &item.kind {
-        TermKind::Declaration { usages, .. } | TermKind::RecordField { usages, .. } => Some(
-            usages
-                .iter()
-                .filter_map(|reference_id| {
-                    linearization
-                        .get_item(*reference_id, &server.lin_cache)
-                        .unwrap()
-                        .pos
-                        .as_opt_ref()
-                        .map(|RawSpan { start, end, src_id }| Location {
-                            uri: Url::from_file_path(server.cache.name(*src_id)).unwrap(),
-                            range: Range::from_codespan(
-                                src_id,
-                                &((*start).into()..(*end).into()),
-                                server.cache.files(),
-                            ),
-                        })
-                })
-                .collect(),
-        ),
-        _ => None,
-    };
-
-    debug!("referencing locations: {:?}", locations);
-
-    if let Some(response) = locations {
-        server.reply(Response::new_ok(id, response));
     } else {
-        server.reply(Response::new_ok(id, Value::Null));
+        server.reply(Response::new_ok(id, locations));
     }
     Ok(())
 }

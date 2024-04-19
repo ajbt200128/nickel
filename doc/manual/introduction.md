@@ -38,11 +38,10 @@ Nickel's salient traits are:
     lets users add arbitrary assertions of their own and easily understand why
     when assertions fail.
 
-The motto guiding Nickel's design is:
-> Great defaults, design for extensibility
+The motto guiding Nickel's design is: **Great defaults, design for extensibility**
 
 There should be a standard, clear path for common things. There should be no
-arbitrary restrictions that limit what you can do you the one day you need to go
+arbitrary restrictions that limit what you can do the one day you need to go
 beyond.
 
 ## Use cases
@@ -75,16 +74,16 @@ website.
 
 ## Current state and roadmap
 
-Nickel has been released in version `0.3`. This version should be functional, it
-is intended to gather feedback and real-life testing. Nickel `0.3` isn't intended
-to be used in production yet. The next steps we plan to work on are:
+Since version 1.0 released in May 2023, the core design of the language is
+stable and Nickel is useful for real-world applications. The next steps we plan
+to work on are:
 
-- Nix integration: being able to seamlessly use Nickel to write packages and
-  shells ([nickel-nix](https://github.com/nickel-lang/nickel-nix))
 - Custom merge functions (second part of the
-  [overriding proposal](https://github.com/tweag/nickel/blob/9fd6e436c0db8f101d4eb26cf97c4993357a7c38/rfcs/001-overriding.md))
-- Rework the merging semantics and implementation ([RFC005](https://github.com/tweag/nickel/blob/6110c7f61e46f39e57503889b8f699de8ef3d41e/rfcs/005-metadata-rework.md))
-- Cached incremental evaluation
+  [overriding
+  proposal](https://github.com/tweag/nickel/blob/9fd6e436c0db8f101d4eb26cf97c4993357a7c38/rfcs/001-overriding.md))
+- [Incremental evaluation](https://github.com/tweag/nickel/issues/1589): design
+    an incremental evaluation model and a caching mechanism in order to perform
+    fast re-evaluation upon small changes to a configuration.
 - Performance improvements
 
 ## Content
@@ -92,8 +91,11 @@ to be used in production yet. The next steps we plan to work on are:
 This document is a detailed documentation on the main aspects of the language.
 It is composed of the following sections:
 
+1. [Tutorial](./tutorial.md)
 1. [Syntax](./syntax.md)
 1. [Merging](./merging.md)
+1. [Modular configurations](./modular-configurations.md)
 1. [Correctness](./correctness.md)
 1. [Contracts](./contracts.md)
 1. [Typing](./typing.md)
+1. [Types vs. Contracts](./types-vs-contracts.md)

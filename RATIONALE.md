@@ -23,7 +23,13 @@ alternatives.
     - [Typing](#typing)
     - [Turing completeness](#turing-completeness)
     - [Side-effects](#side-effects)
-2. [Comparison with alternatives](#comparison-with-alternatives)
+2. [Why Nickel is not a DSL embedded in an existing language](#why-nickel-is-not-a-dsl-embedded-in-an-existing-language)
+    - [Error messages](#error-messages)
+    - [LSP integration](#lsp-integration)
+    - [Haskell is heavy](#haskell-is-heavy)
+    - [Haskell is not familiar](#haskell-is-not-familiar)
+    - [Is it really less work?](#is-it-really-less-work)
+3. [Comparison with alternatives](#comparison-with-alternatives)
     - [Starlark](#starlark-the-standard-package)
     - [Nix](#nix-json-and-functions)
     - [Dhall](#dhall-powerful-type-system)
@@ -135,14 +141,14 @@ the program itself or later in the pipeline ?  Using types, the generating
 language is no more oblivious to these external schemas and can model them
 internally, enabling early and precise error reporting.
 
-In Nickel, such schemas are specified using *enriched values*. Enriched values
-are meta-data about record fields like `id` or `baseURL`: they can provide
-documentation, a default value, or even a type. Types so specified are called
-*contracts*: they are not part of the static type system, but rather offer a
-principled approach to dynamic type checking. They enforce types (or more
-complex, user-defined) assertions at runtime. Equipped with enriched values, one
-can for example ensure that `baseURL` is not only a string but a valid URL, and
-document that it should be the Github homepage of a project.
+In Nickel, such schemas are specified using metadata. Metadata can provide
+documentation, a default value, or even a runtime type. Runtime types so
+specified are called *contracts*: they are not part of the static type system,
+but rather offer a principled approach to dynamic type checking. They enforce
+types (or more complex, user-defined assertions) at runtime. Equipped with
+metadata, one can for example enforce that `baseURL` is not only a string but a
+valid URL, and attach documentation to specify that it should be the Github
+homepage of a project.
 
 ### Turing completeness
 
@@ -157,8 +163,8 @@ never requires recursion, this is not the case with library code. Allowing
 recursion makes it possible for programmers to implement new generic
 functionalities \[2\].
 
-\[1\]: [Why Dhall is not Turing complete](https://neilmitchell.blogspot.com/2020/11/turing-incomplete-languages.html)\
-\[2\]: [Turing incomplete languages](https://www.haskellforall.com/2020/01/why-dhall-advertises-absence-of-turing.html)
+\[1\]: [Why Dhall is not Turing complete](https://www.haskellforall.com/2020/01/why-dhall-advertises-absence-of-turing.html)\
+\[2\]: [Turing incomplete languages](https://neilmitchell.blogspot.com/2020/11/turing-incomplete-languages.html)
 
 ### Side-Effects
 
@@ -185,6 +191,85 @@ commutative, a property which makes them not hurting parallelizability. They are
 extensible, meaning that third-party may define new effects and implement
 externally the associated effect handlers in order to customize Nickel for
 specific use-cases.
+
+## Why Nickel is not a DSL embedded in an existing language
+
+Using an existing language to embed configuration is a common approach. In this
+section, we'll try to answer the question why Nickel isn't a DSL embedded in,
+say, Haskell.
+
+On the front of Infrastructure-as-Code, Pulumi adopted a similar approach:
+instead of creating their own new deployment language, they chose to leverage
+known, mature and well-equipped programming languages to write deployments.
+
+While embedding brings obvious advantages, it also comes with its lot of issues.
+
+### Error messages
+
+The end result of Nickel being a useful tool is, all in all, error messages
+(not only, but it's the user-facing consequence of the majority of correctness
+features such as typechecking and contracts). It doesn't help to have a very
+fancy types and contracts system if you're unable to diagnose when something
+goes wrong.
+
+Embedding Nickel in Haskell would probably make error messages unusable. They
+can already be suboptimal for normal Haskell, but adding for example row
+polymorphism encoded in the Haskell type system would be worse. Encoding
+Nickel's gradual type system in a usable way in Haskell might prove challenging
+as well.
+
+The contract system alone could be easily implemented in any functional language
+without much native support (including Nix). Once again, the big difference
+Nickel hopes to make is error messages (beside naturality of the syntax, LSP
+support and so on). Being built-in, contract error reporting has special support
+in the interpreter with access to source positions, the call stack, and so on.
+This is much harder to replicate in a host language.
+
+### LSP integration
+
+The same arguments apply to the LSP. The Nickel LSP currently features record
+completion based on both type information, contract information, and bare record
+structures. This is the kind of feature that makes using Nickel for e.g.
+Kubernetes appealing: even without functions and types, getting completion with
+documentation in-code is already valuable. This is not possible for a generic
+Haskell LSP, with no knowledge of DSLs such as Nickel.
+
+### Haskell is heavy
+
+One of the possible use-case of Nickel would be to embed Nickel, either as a
+binary or linked to it as a C library, into another tool to use (think a cloud
+orchestrator like Terraform). Pulling all of the GHC toolchain to evaluate a few
+hundred lines of configuration sounds overkill. Garbage collection and
+Haskell runtime makes it also harder to interface it with other languages and
+binaries (hence the choice of Rust to implement Nickel).
+
+### Haskell is not familiar
+
+Another goal of Nickel is to be understandable by DevOps, not only by functional
+programmers. In particular, as long as you don't write library code yourself,
+the syntax is JSON-like and doesn't use very fancy constructions (custom
+contracts are often implemented externally to the configuration itself, and
+basic contracts look like JSON schemas). Changing some configuration option
+should be trivial to do for non-developers. This is also harder to achieve in a
+Haskell DSL.
+
+### Is it really less work
+
+A big part of the work of developing Nickel is language design and
+experimentation. I think implementing the core language from scratch, now that
+we have a good idea of what it looks like, wouldn't be a daunting task.
+
+Another aspect is developing the tooling, and indeed we could get some for free
+if we piggy-backed on Haskell. But the Haskell tooling would be close to useless
+for such an advanced DSL anyway, as mentioned in the previous paragraphs.
+
+Finally, embedding Nickel in Haskell would also involve constraints and work
+that we don't have for a stand-alone language (such as encoding the type system
+of Nickel inside the one of Haskell).
+
+In conclusion, it's hard to tell, but it doesn't seem totally obvious that
+embedding Nickel in Haskell from the beginning would have been much less work
+than starting a language from scratch.
 
 ## Comparison with alternatives
 
@@ -323,7 +408,7 @@ This provides:
 - Querying: synthesize values inhabiting a type
 - Trimming: Automatically simplify code
 
-Nickel's merge system and enriched values are inspired by CUE's type lattice,
+Nickel's merge system and metadata are inspired by CUE's type lattice,
 although the flexibility of Nickel necessarily makes the two system behave
 differently.
 
@@ -344,8 +429,29 @@ functionalities to Nickel's merge system.
 ### Jsonnet vs Nickel
 
 The main difference between Jsonnet and Nickel are types. Jsonnet does not
-feature static types, contracts or enriched values, and thus can't type library
-code and has no principled approach to data validation.
+feature static types, contracts or metadata, and thus can't type library code
+and has no principled approach to data validation.
+
+### KCL: python-like syntax with object-oriented schemas
+
+The KCL configuration language supports validation against object-oriented
+schemas that can be combined through inheritance and mixins. It has functions
+and modules, supports configuration merging,
+and ships with a large collection of validation modules.
+
+### KCL vs Nickel
+
+The KCL typesystem feels more nominal and object-oriented than Nickel's:
+
+- in KCL you specify the name of the schema when you're writing out the object
+  that's supposed to conform to it; in Nickel, you can write out a record first
+  and then apply the contract at some later point
+- in KCL, schema inheritance and mixins are written explicitly; in Nickel, complex
+  contracts are built compositionally, by merging smaller ones.
+
+But the bigger difference is that KCL's schema validation is strict while Nickel's
+is lazy. This may make Nickel better suited to partial evaluation of large
+configurations.
 
 ### Comparison with other configuration languages
 <!-- Intentionally duplicated in `README.md`, please update the other one for
@@ -359,6 +465,7 @@ any change done here -->
 | Dhall    | Static (requires annotations) | Restricted | Lazy       | No                                               |
 | CUE      | Static (everything is a type) | No         | Lazy       | No, but allowed in the separated scripting layer |
 | Jsonnet  | Dynamic                       | Yes        | Lazy       | No                                               |
+| KCL      | Gradual (dynamic + static)    | Yes        | Strict     | No                                               |
 | JSON     | None                          | No         | Strict     | No                                               |
 | YAML     | None                          | No         | N/A        | No                                               |
 | TOML     | None                          | No         | N/A        | No                                               |

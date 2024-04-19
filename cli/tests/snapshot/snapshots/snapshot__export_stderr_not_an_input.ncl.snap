@@ -1,0 +1,9 @@
+---
+source: cli/tests/snapshot/main.rs
+expression: err
+---
+error: invalid assignment: `override.first` isn't an input
+ = `override.first` already has a value and thus can't be assigned without `--override`.
+ = If you really want to override this field, please use `--override 'override.first="test"'` instead.
+
+
