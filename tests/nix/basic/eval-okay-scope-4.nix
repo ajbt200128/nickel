@@ -1,14 +1,15 @@
 [
   (("ccdd") == (
-    let {
+    let
 
-    x = "a";
-    y = "b";
+      x = "a";
+      y = "b";
 
-    f = { x ? y, y ? x }: x + y;
+      f = { x ? y, y ? x }: x + y;
 
-    body = f { x = "c"; } + f { y = "d"; };
+      body = f { x = "c"; } + f { y = "d"; };
 
-    }
+    in
+    body
   ))
 ]

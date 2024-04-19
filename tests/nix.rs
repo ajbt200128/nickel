@@ -25,7 +25,7 @@ fn test_basic(resource: &str) {
 }
 
 //eval-okay-autoargs.nix: TODO
-//eval-okay-attrs.nix:  legacy let
+//eval-okay-attrs.nix: Needs assert
 //eval-okay-attrs2.nix:  Needs assert
 //eval-okay-attrs3.nix: TODO
 //eval-okay-attrs4.nix: TODO
@@ -45,8 +45,7 @@ fn test_basic(resource: &str) {
 //eval-okay-functionargs.nix: TODO
 //eval-okay-import.nix: TODO
 //eval-okay-ind-string.nix: TODO
-//eval-okay-let.nix:  needs legacy let
-//eval-okay-list.nix:  needs legacy let
+//eval-okay-list.nix: needs TODO
 //eval-okay-listtoattrs.nix: TODO
 //eval-okay-logic.nix:  needs assert
 //eval-okay-map.nix: TODO
@@ -56,11 +55,11 @@ fn test_basic(resource: &str) {
 //eval-okay-overrides.nix: TODO
 //eval-okay-path-string-interpolation.nix: TODO
 //eval-okay-patterns.nix: TODO
-//eval-okay-remove.nix:  needs legacy let
+//eval-okay-remove.nix:  TODO
 //eval-okay-scope-1.nix: TODO
 //eval-okay-scope-3.nix: TODO
-//eval-okay-scope-4.nix:  needs legacy let
-//eval-okay-scope-6.nix:  needs legacy let
+//eval-okay-scope-4.nix:  TODO
+//eval-okay-scope-6.nix:  TODO
 //eval-okay-scope-7.nix: TODO
 //eval-okay-string.nix: TODO
 //eval-okay-strings-as-attrs-names.nix: TODO

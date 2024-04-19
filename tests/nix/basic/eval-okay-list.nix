@@ -1,9 +1,11 @@
 [
   (("foobarblatest") == (with import ./lib.nix;
 
-  let {
+  let
 
-  body = concat [ "foo" "bar" "bla" "test" ];
+    body = concat [ "foo" "bar" "bla" "test" ];
 
-  }))
+  in
+  body
+  ))
 ]
