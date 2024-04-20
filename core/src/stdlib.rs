@@ -7,8 +7,12 @@ use crate::term::RichTerm;
 ///
 /// Using a dedicated enum tpe, handling arrays, etc. for two modules can seem a bit overkill, but
 /// we'll probably extend `StdlibModule` when we'll split the `std` module into several files.
-pub fn modules() -> [StdlibModule; 2] {
-    [StdlibModule::Std, StdlibModule::Internals]
+pub fn modules() -> [StdlibModule; 3] {
+    [
+        StdlibModule::Std,
+        StdlibModule::Internals,
+        StdlibModule::Compat,
+    ]
 }
 
 /// Represents a particular Nickel standard library module.
@@ -16,6 +20,7 @@ pub fn modules() -> [StdlibModule; 2] {
 pub enum StdlibModule {
     Std,
     Internals,
+    Compat,
 }
 
 impl StdlibModule {
@@ -23,6 +28,7 @@ impl StdlibModule {
         match self {
             StdlibModule::Std => "<stdlib/std.ncl>",
             StdlibModule::Internals => "<stdlib/internals.ncl>",
+            StdlibModule::Compat => "<stdlib/compat.ncl>",
         }
     }
 
@@ -34,6 +40,7 @@ impl StdlibModule {
         match self {
             StdlibModule::Std => "std",
             StdlibModule::Internals => "internals",
+            StdlibModule::Compat => "compat",
         }
     }
 
@@ -41,6 +48,7 @@ impl StdlibModule {
         match self {
             StdlibModule::Std => include_str!("../stdlib/std.ncl"),
             StdlibModule::Internals => include_str!("../stdlib/internals.ncl"),
+            StdlibModule::Compat => include_str!("../stdlib/compat.ncl"),
         }
     }
 }
@@ -103,4 +111,46 @@ pub mod internals {
 
     generate_accessor!(rec_default);
     generate_accessor!(rec_force);
+}
+
+pub mod compat {
+    use super::*;
+    use crate::mk_app;
+    use crate::term::make::op1;
+    use crate::term::{array::Array, Term, UnaryOp};
+
+    /// helper function to perform a Nix like update (`//` operator).
+    pub fn update() -> RichTerm {
+        op1(
+            UnaryOp::StaticAccess("update_all".into()),
+            Term::Var("compat".into()),
+        )
+    }
+
+    /// helper function to check if a record has a nested field.
+    pub fn has_field_path() -> RichTerm {
+        op1(
+            UnaryOp::StaticAccess("has_field_path".into()),
+            Term::Var("compat".into()),
+        )
+    }
+
+    /// Generate the `with` compatibility Nickel function which may be applied to an `Ident`
+    /// you have to pass a list of with records in ordered from outer-most to inner-most one.
+    pub fn with(array: Array) -> RichTerm {
+        mk_app!(
+            op1(
+                UnaryOp::StaticAccess("with".into()),
+                Term::Var("compat".into()),
+            ),
+            Term::Array(array, Default::default())
+        )
+    }
+
+    pub fn add() -> RichTerm {
+        op1(
+            UnaryOp::StaticAccess("add".into()),
+            Term::Var("compat".into()),
+        )
+    }
 }

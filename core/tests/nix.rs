@@ -1,25 +1,29 @@
-#![cfg(feature = "nix")]
-use nickel_lang::term::Term;
-use nickel_lang_utilities::eval;
+use nickel_lang_core::term::Term;
+use nickel_lang_utils::test_program::program_from_expr;
 use test_generator::test_resources;
 
 fn run(path: &str) {
-    eval(format!(
-        "import \"{}/{path}\" |> array.all function.id",
-        env!("CARGO_MANIFEST_DIR"),
-    ))
-    .map(|term| {
-        assert_eq!(term, Term::Bool(true), "error in test {path}");
-    })
-    .unwrap();
+    // remove the leading "core"
+    let path = path.split('/').skip(1).collect::<Vec<_>>().join("/");
+    let mut program = program_from_expr(format!(
+        "(import \"{path}\") |> std.array.all std.function.id"
+    ));
+    program.add_import_paths(vec![env!("CARGO_MANIFEST_DIR")].into_iter());
+    program
+        .eval()
+        .map(Term::from)
+        .map(|term| {
+            assert_eq!(term, Term::Bool(true), "error in test {path}");
+        })
+        .unwrap();
 }
 
-#[test_resources("tests/nix/quick/*.nix")]
+#[test_resources("core/tests/nix/quick/*.nix")]
 fn test_quick(resource: &str) {
     run(resource);
 }
 
-#[test_resources("tests/nix/basic/eval-okay-*.nix")]
+#[test_resources("core/tests/nix/basic/eval-okay-*.nix")]
 fn test_basic(resource: &str) {
     run(resource);
 }
@@ -67,7 +71,7 @@ fn test_basic(resource: &str) {
 //eval-okay-tail-call-1.nix: TODO
 //eval-okay-xml.nix: TODO
 
-#[test_resources("tests/nix/builtins/eval-okay-*.nix")]
+#[test_resources("core/tests/nix/builtins/eval-okay-*.nix")]
 fn test_builtins(resource: &str) {
     run(resource);
 }

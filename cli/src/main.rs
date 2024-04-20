@@ -6,6 +6,10 @@ mod doc;
 mod format;
 #[cfg(feature = "metrics")]
 mod metrics;
+
+#[cfg(feature = "nix")]
+mod nix;
+
 #[cfg(feature = "repl")]
 mod repl;
 
@@ -51,6 +55,9 @@ fn main() -> ExitCode {
 
         #[cfg(feature = "format")]
         Command::Format(format) => format.run(opts.global),
+
+        #[cfg(feature = "nix")]
+        Command::Nixin(nix) => nix.run(opts.global),
     };
 
     #[cfg(feature = "metrics")]

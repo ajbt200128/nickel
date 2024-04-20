@@ -1,16 +1,14 @@
 use crate::cache::Cache;
 use crate::conversion::State;
 pub use crate::conversion::ToNickel;
-use crate::identifier::Ident;
+use crate::identifier::LocIdent;
 use crate::mk_app;
 use crate::parser::utils::{mk_span, FieldPathElem};
 use crate::position::TermPos;
 use crate::term::make::{self, if_then_else};
+use crate::term::TypeAnnotation;
+use crate::term::{record::Field, RichTerm, Term};
 use crate::term::{record::RecordData, BinaryOp, UnaryOp};
-use crate::term::{
-    record::{Field, FieldMetadata},
-    MergePriority, RichTerm, Term,
-};
 use codespan::FileId;
 use rnix::ast::{
     Attr as NixAttr, BinOp as NixBinOp, Ident as NixIdent, Str as NixStr, UnaryOp as NixUniOp,
@@ -28,7 +26,7 @@ fn path_elem_from_nix(attr: NixAttr, state: &State) -> FieldPathElem {
 
 fn path_elem_rt(attr: NixAttr, state: &State) -> RichTerm {
     match attr {
-        NixAttr::Ident(id) => Term::Str(id.to_string()).into(),
+        NixAttr::Ident(id) => Term::Str(id.to_string().into()).into(),
         NixAttr::Str(s) => s.translate(state),
         NixAttr::Dynamic(d) => d.expr().unwrap().translate(state),
     }
@@ -41,10 +39,10 @@ where
     n.attrs().map(|a| path_elem_rt(a, state)).collect()
 }
 
-fn id_from_nix(id: NixIdent, state: &State) -> Ident {
+fn id_from_nix(id: NixIdent, state: &State) -> LocIdent {
     let pos = id.syntax().text_range();
     let span = mk_span(state.file_id, pos.start().into(), pos.end().into());
-    Ident::new_with_pos(id.to_string(), crate::position::TermPos::Original(span))
+    LocIdent::new_with_pos(id.to_string(), crate::position::TermPos::Original(span))
 }
 
 impl ToNickel for NixStr {
@@ -70,7 +68,7 @@ impl ToNickel for NixUniOp {
         use rnix::ast::UnaryOpKind::*;
         let value = self.expr().unwrap().translate(state);
         match self.operator().unwrap() {
-            Negate => make::op2(BinaryOp::Sub(), Term::Num(0.), value),
+            Negate => make::op2(BinaryOp::Sub(), Term::Num((0. as i64).into()), value),
             Invert => make::op1(UnaryOp::BoolNot(), value),
         }
     }
@@ -145,13 +143,13 @@ impl ToNickel for rnix::ast::Expr {
             // - It differenciate floats and integers. We then convertboth to floats.
             // - For some reason, `Uri`s are concidered literals, but `Str` and `Path` are not.
             Expr::Literal(n) => match n.kind() {
-                rnix::ast::LiteralKind::Float(v) => Term::Num(v.value().unwrap()),
-                rnix::ast::LiteralKind::Integer(v) => Term::Num(v.value().unwrap() as f64),
+                rnix::ast::LiteralKind::Float(v) => Term::Num((v.value().unwrap() as i64).into()),
+                rnix::ast::LiteralKind::Integer(v) => Term::Num((v.value().unwrap() as i64).into()),
                 // TODO: How to manage Uris in nickel?
                 // What should be the nickel internal representation?
                 // String could be ok, but what if we give it back to a Nix expr?
                 // Apologise, not sure of the output of `Uri::to_string`
-                rnix::ast::LiteralKind::Uri(v) => Term::Str(v.to_string()),
+                rnix::ast::LiteralKind::Uri(v) => Term::Str(v.to_string().into()),
             }
             .into(),
             // That's what we call a multiline string in Nickel. Nix don't have the concept of
@@ -205,7 +203,7 @@ impl ToNickel for rnix::ast::Expr {
                     } else {
                         Term::App(
                             crate::stdlib::compat::with(state.with.clone().into_iter().collect()),
-                            Term::Str(id.to_string()).into(),
+                            Term::Str(id.to_string().into()).into(),
                         )
                     }
                 }
@@ -216,9 +214,9 @@ impl ToNickel for rnix::ast::Expr {
             // a `let <pattern> = <recrecord> in`. The record provide recursivity then the values
             // are destructured by the pattern.
             Expr::LetIn(n) => {
-                use crate::destructuring;
+                use crate::term::pattern::*;
                 use rnix::ast::HasEntry;
-                let mut destruct_vec = Vec::new();
+                let mut patterns_vec = Vec::new();
                 let mut fields = HashMap::new();
                 let mut state = state.clone();
                 state.env.extend(n.attrpath_values().map(|kv| {
@@ -232,7 +230,7 @@ impl ToNickel for rnix::ast::Expr {
                     let id = kv.attrpath().unwrap().attrs().next().unwrap();
                     // Check we don't try to redefine builtin values. Even if it's possible in Nix,
                     // we don't suport it.
-                    let id: Ident = match id.to_string().as_str() {
+                    let id: LocIdent = match id.to_string().as_str() {
                         "true" | "false" | "null" => panic!(
                             "`let {id}` is forbidden. Can not redefine `true`, `false` or `null`"
                         ),
@@ -240,21 +238,45 @@ impl ToNickel for rnix::ast::Expr {
                             let pos = id.syntax().text_range();
                             let span = mk_span(state.file_id, pos.start().into(), pos.end().into());
                             // give a position to the identifier.
-                            Ident::new_with_pos(s, crate::position::TermPos::Original(span))
+                            LocIdent::new_with_pos(s, crate::position::TermPos::Original(span))
                         }
                     };
                     let rt = kv.value().unwrap().translate(&state);
-                    destruct_vec.push(destructuring::Match::Simple(id, Default::default()));
+                    let annotation = TypeAnnotation {
+                        typ: None,
+                        contracts: vec![],
+                    };
+
+                    let data = PatternData::Any(id);
+                    let pattern = Pattern {
+                        data,
+                        alias: None,
+                        pos: id.pos,
+                    };
+                    let field_pattern = FieldPattern {
+                        matched_id: id,
+                        annotation,
+                        default: None,
+                        pattern,
+                        pos: id.pos,
+                    };
+                    patterns_vec.push(field_pattern);
                     fields.insert(id, rt);
                 }
-                make::let_pat::<Ident, _, _, _>(
-                    None,
-                    destructuring::RecordPattern {
-                        matches: destruct_vec,
-                        open: false,
-                        rest: None,
-                        span,
-                    },
+                let pos = TermPos::Original(span);
+                let record_pattern = RecordPattern {
+                    patterns: patterns_vec,
+                    tail: RecordPatternTail::Empty,
+                    pos,
+                };
+                let pattern = Pattern {
+                    data: PatternData::Record(record_pattern),
+                    alias: None,
+                    pos,
+                };
+
+                make::let_pat(
+                    pattern,
                     Term::RecRecord(RecordData::with_field_values(fields), Vec::new(), None),
                     n.body().unwrap().translate(&state),
                 )
@@ -285,38 +307,45 @@ impl ToNickel for rnix::ast::Expr {
                     // ...}:`
                     rnix::ast::Param::Pattern(pat) => {
                         // TODO: add the matched identifiers to `state.env`
-                        use crate::destructuring::*;
-                        let at = pat
-                            .pat_bind()
-                            .map(|id| id_from_nix(id.ident().unwrap(), state));
-                        let matches = pat
+                        use crate::term::pattern::*;
+                        let patterns = pat
                             .pat_entries()
                             .map(|e| {
                                 // manage default values:
-                                let field = if let Some(def) = e.default() {
-                                    Field {
-                                        value: Some(def.translate(state)),
-                                        metadata: FieldMetadata {
-                                            priority: MergePriority::Bottom,
-                                            ..Default::default()
-                                        },
-                                        pending_contracts: Vec::new(),
-                                    }
-                                } else {
-                                    // the value does not has default. So we construct an empty
-                                    // metavalue without any priority annotation.
-                                    Default::default()
+                                let default =
+                                    e.default().and_then(|def| Some(def.translate(state)));
+                                let id = id_from_nix(e.ident().unwrap(), state);
+                                let annotation = TypeAnnotation {
+                                    typ: None,
+                                    contracts: vec![],
                                 };
-                                Match::Simple(id_from_nix(e.ident().unwrap(), state), field)
+                                let data = PatternData::Any(id);
+                                let pattern = Pattern {
+                                    data,
+                                    alias: None,
+                                    pos: id.pos,
+                                };
+                                FieldPattern {
+                                    matched_id: id,
+                                    annotation,
+                                    default,
+                                    pattern,
+                                    pos: id.pos,
+                                }
                             })
                             .collect();
-                        let dest = RecordPattern {
-                            matches,
-                            open: pat.ellipsis_token().is_some(),
-                            rest: None,
-                            span,
+                        let pos = TermPos::Original(span);
+                        let record_pattern = RecordPattern {
+                            patterns,
+                            tail: RecordPatternTail::Empty,
+                            pos,
                         };
-                        Term::FunPattern(at, dest, n.body().unwrap().translate(state))
+                        let pattern = Pattern {
+                            data: PatternData::Record(record_pattern),
+                            alias: None,
+                            pos,
+                        };
+                        Term::FunPattern(pattern, n.body().unwrap().translate(state))
                     }
                 }
             }

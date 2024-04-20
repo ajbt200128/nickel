@@ -1,4 +1,3 @@
-# Basics tests taken from basics.ncl and rewritten with Nix
 [
   # basic arithmetic
   (1 + 1 == 2)

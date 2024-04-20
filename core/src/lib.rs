@@ -1,12 +1,15 @@
 pub mod cache;
 pub mod closurize;
 pub mod combine;
+pub mod conversion;
 pub mod deserialize;
 pub mod environment;
 pub mod error;
 pub mod eval;
 pub mod identifier;
 pub mod label;
+#[cfg(feature = "nix")]
+pub mod nix;
 #[cfg(feature = "nix-experimental")]
 pub mod nix_ffi;
 pub mod parser;

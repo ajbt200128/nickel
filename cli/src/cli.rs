@@ -4,7 +4,8 @@ use git_version::git_version;
 
 use crate::{
     completions::GenCompletionsCommand, eval::EvalCommand, export::ExportCommand,
-    pprint_ast::PprintAstCommand, query::QueryCommand, typecheck::TypecheckCommand,
+    nix::NixinCommand, pprint_ast::PprintAstCommand, query::QueryCommand,
+    typecheck::TypecheckCommand,
 };
 
 use nickel_lang_core::error::report::ErrorFormat;
@@ -86,4 +87,10 @@ pub enum Command {
 
     /// Generate shell completion files
     GenCompletions(GenCompletionsCommand),
+
+    /// translate Nix input to Nickel code.
+    /// Only a POC, main target is to be able to run Nix code on nickel.
+    /// May never be a complete source to source transformation.
+    #[cfg(feature = "nix")]
+    Nixin(NixinCommand),
 }
