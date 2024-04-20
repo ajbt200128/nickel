@@ -50,7 +50,8 @@ impl ToNickel for NixStr {
     fn translate(self, state: &State) -> RichTerm {
         use rnix::ast::InterpolPart;
         Term::StrChunks(
-            self.parts()
+            self.normalized_parts()
+                .into_iter()
                 .enumerate()
                 .map(|(i, c)| match c {
                     InterpolPart::Literal(s) => crate::term::StrChunk::Literal(s.to_string()),
@@ -58,8 +59,6 @@ impl ToNickel for NixStr {
                         crate::term::StrChunk::Expr(interp.expr().unwrap().translate(state), i)
                     }
                 })
-                .collect::<Vec<_>>()
-                .into_iter()
                 .rev() // parts come in reverse order for some reason
                 .collect(),
         )
@@ -184,8 +183,8 @@ impl ToNickel for rnix::ast::Expr {
                             .collect();
                         let field_def = FieldDef {
                             path,
-                            field: Field::from(val),
-                            pos: TermPos::None,
+                            field: Field::from(val.clone()),
+                            pos: val.pos,
                         };
                         field_def.elaborate()
                     })

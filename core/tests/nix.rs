@@ -29,17 +29,13 @@ fn test_basic(resource: &str) {
     run(resource);
 }
 
-//eval-okay-autoargs.nix: TODO
 //eval-okay-attrs.nix: Needs assert
-//eval-okay-attrs2.nix:  Needs assert
-//eval-okay-attrs4.nix: TODO
-//eval-okay-attrs5.nix: TODO
-//eval-okay-attrs6.nix: TODO
-//eval-okay-backslash-newline-1.nix: TODO
-//eval-okay-backslash-newline-2.nix: TODO
+//eval-okay-attrs5.nix: Needs path
 //eval-okay-baseNameOf.nix:  Needs assert
-//eval-okay-callable-attrs.nix:  Overflows
-//eval-okay-curpos.nix:  TODO
+//eval-okay-callable-attrs.nix: Nix functors are weird. We probably can
+// replicate them but they're non trivial, and rarely used in NixOS/nixpkgs
+//eval-okay-curpos.nix: Needs __curPos. Non trivial to get the column. Maybe we
+// only provide __curPos.file, since that's all that's used in NixOS/nixpgs
 //eval-okay-delayed-with.nix:  Overflows
 //eval-okay-dynamic-attrs-2.nix: TODO
 //eval-okay-dynamic-attrs-bare.nix: TODO
