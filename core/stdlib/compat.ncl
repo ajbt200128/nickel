@@ -1,6 +1,6 @@
 #Nix compatibility layer.
 #This library is used by program transpiled from Nix code to Nickel. This
-#library should'nt usually be used directly by Nickel program. The API
+#library shouldn't usually be used directly by Nickel program. The API
 #isn't stable and no backward-compatibility guarantees exist at this
 #point
  {

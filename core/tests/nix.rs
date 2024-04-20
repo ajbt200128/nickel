@@ -13,6 +13,7 @@ fn run(path: &str) {
         .eval()
         .map(Term::from)
         .map(|term| {
+            println!("{}: {:?}", path, term);
             assert_eq!(term, Term::Bool(true), "error in test {path}");
         })
         .unwrap();
@@ -31,7 +32,6 @@ fn test_basic(resource: &str) {
 //eval-okay-autoargs.nix: TODO
 //eval-okay-attrs.nix: Needs assert
 //eval-okay-attrs2.nix:  Needs assert
-//eval-okay-attrs3.nix: TODO
 //eval-okay-attrs4.nix: TODO
 //eval-okay-attrs5.nix: TODO
 //eval-okay-attrs6.nix: TODO

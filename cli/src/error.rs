@@ -59,6 +59,10 @@ pub enum Error {
     ///
     /// Upon receiving this error, the caller should simply exit without proceeding with evaluation.
     CustomizeInfoPrinted,
+    #[cfg(feature = "nix")]
+    Nix {
+        error: nickel_lang_core::nix::NixParseError,
+    },
 }
 
 impl IntoDiagnostics<FileId> for CliUsageError {
@@ -207,6 +211,13 @@ impl From<nickel_lang_core::repl::InitError> for Error {
     }
 }
 
+#[cfg(feature = "nix")]
+impl From<nickel_lang_core::nix::NixParseError> for Error {
+    fn from(error: nickel_lang_core::nix::NixParseError) -> Self {
+        Error::Nix { error }
+    }
+}
+
 pub trait ResultErrorExt<T> {
     fn report_with_program(self, program: Program<CBNCache>) -> CliResult<T>;
 }
@@ -260,6 +271,10 @@ impl Error {
             Error::CliUsage { error, mut program } => program.report(error, format),
             Error::CustomizeInfoPrinted => {
                 // Nothing to do, the caller should simply exit.
+            }
+            #[cfg(feature = "nix")]
+            Error::Nix { error } => {
+                report_standalone("Nix error", Some(error.to_string()));
             }
         }
     }

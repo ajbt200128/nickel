@@ -16,6 +16,7 @@ use rnix::ast::{
 use rowan::ast::AstNode;
 use std::collections::HashMap;
 
+pub type NixParseError = rnix::parser::ParseError;
 fn path_elem_from_nix(attr: NixAttr, state: &State) -> FieldPathElem {
     match attr {
         NixAttr::Ident(id) => FieldPathElem::Ident(id_from_nix(id, state)),
@@ -57,6 +58,9 @@ impl ToNickel for NixStr {
                         crate::term::StrChunk::Expr(interp.expr().unwrap().translate(state), i)
                     }
                 })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev() // parts come in reverse order for some reason
                 .collect(),
         )
         .into()
@@ -116,7 +120,9 @@ impl ToNickel for rnix::ast::Expr {
         let pos = self.syntax().text_range();
         let file_id = state.file_id;
         let span = mk_span(file_id, pos.start().into(), pos.end().into());
-        println!("{self:?}: {self}");
+
+        #[cfg(debug_assertions)]
+        eprintln!("{self:?}: {self}");
         match self {
             // This is a parse error of the nix code.
             // it's translated to a Nickel internal error specific for nix code (`NixParseError`)
@@ -194,6 +200,9 @@ impl ToNickel for rnix::ast::Expr {
                 "true" => Term::Bool(true),
                 "false" => Term::Bool(false),
                 "null" => Term::Null,
+                "toString" => {
+                    Term::Op1(UnaryOp::StaticAccess("to_string".into()), make::var("std"))
+                }
                 id_str => {
                     // Compatibility with the Nix `with` construct. It look if the identifier has
                     // been staticaly defined and if not, it look for it in the `with` broughts
@@ -436,7 +445,7 @@ impl ToNickel for rnix::ast::Expr {
 
 /// the main entry of this module. It parse a Nix file pointed by `file_id` into a Nickel
 /// AST/Richterm.
-pub fn parse(cache: &Cache, file_id: FileId) -> Result<RichTerm, rnix::parser::ParseError> {
+pub fn parse(cache: &Cache, file_id: FileId) -> Result<RichTerm, NixParseError> {
     let source = cache.files().source(file_id);
     let root = rnix::Root::parse(source).ok()?; // TODO: we could return a list of errors calling
                                                 // `errors()` to improve error management.
