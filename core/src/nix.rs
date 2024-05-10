@@ -11,9 +11,10 @@ use crate::term::{record::Field, RichTerm, Term};
 use crate::term::{record::RecordData, BinaryOp, UnaryOp};
 use codespan::FileId;
 use rnix::ast::{
-    Attr as NixAttr, BinOp as NixBinOp, Ident as NixIdent, Str as NixStr, UnaryOp as NixUniOp,
+    Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry, Ident as NixIdent, Str as NixStr,
+    UnaryOp as NixUniOp,
 };
-use rowan::ast::AstNode;
+use rowan::ast::{AstChildren, AstNode};
 use std::collections::HashMap;
 
 pub type NixParseError = rnix::parser::ParseError;
@@ -44,6 +45,15 @@ fn id_from_nix(id: NixIdent, state: &State) -> LocIdent {
     let pos = id.syntax().text_range();
     let span = mk_span(state.file_id, pos.start().into(), pos.end().into());
     LocIdent::new_with_pos(id.to_string(), crate::position::TermPos::Original(span))
+}
+
+fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<AttrpathValue>) {
+    state.env.extend(attrpath_values.map(|kv| {
+        // TODO: does not work if the let contains Dynamic or Str
+        // TODO: nix supports attrpaths that are nested i.e. a.b.c, we should
+        // add the proper path to the env if it's the case.
+        kv.attrpath().unwrap().attrs().next().unwrap().to_string()
+    }));
 }
 
 impl ToNickel for NixStr {
@@ -167,19 +177,20 @@ impl ToNickel for rnix::ast::Expr {
             .into(),
             Expr::AttrSet(n) => {
                 use crate::parser::utils::{build_record, FieldDef};
-                use rnix::ast::HasEntry;
-                // TODO: Before that, we have to fill `state.env` when the attrset is recursive.
-                // As it is now, a with brought value take precedence over the fields of the
-                // recursive record which is incorrect.
+                let mut state = state.clone();
+                // check if the attrset is recursive and fill the environment with the fields if so
+                if n.rec_token().is_some() {
+                    extend_env_with_attrset(&mut state, n.attrpath_values());
+                }
                 let fields: Vec<(_, _)> = n
                     .attrpath_values()
                     .map(|kv| {
-                        let val = kv.value().unwrap().translate(state);
+                        let val = kv.value().unwrap().translate(&state);
                         let path: Vec<_> = kv
                             .attrpath()
                             .unwrap()
                             .attrs()
-                            .map(|e| path_elem_from_nix(e, state))
+                            .map(|e| path_elem_from_nix(e, &state))
                             .collect();
                         let field_def = FieldDef {
                             path,
@@ -223,18 +234,13 @@ impl ToNickel for rnix::ast::Expr {
             // are destructured by the pattern.
             Expr::LetIn(n) => {
                 use crate::term::pattern::*;
-                use rnix::ast::HasEntry;
                 let mut patterns_vec = Vec::new();
                 let mut fields = HashMap::new();
                 let mut state = state.clone();
-                state.env.extend(n.attrpath_values().map(|kv| {
-                    kv.attrpath().unwrap().attrs().next().unwrap().to_string() // TODO: does not work if the let contains Dynamic or Str. Is
-                                                                               // it possible in Nix?
-                }));
+                extend_env_with_attrset(&mut state, n.attrpath_values());
                 for kv in n.attrpath_values() {
                     // In `let` blocks, the key is supposed to be a single ident so `Path` exactly one
-                    // element. TODO: check nix really don't support attrpath on the lhs in a let
-                    // block.
+                    // element.
                     let id = kv.attrpath().unwrap().attrs().next().unwrap();
                     // Check we don't try to redefine builtin values. Even if it's possible in Nix,
                     // we don't suport it.
@@ -303,26 +309,32 @@ impl ToNickel for rnix::ast::Expr {
 
             // a lambda or a function definition.
             Expr::Lambda(n) => {
+                // no matter what we're going to add the param to the environment.
+                let mut state = state.clone();
                 match n.param().unwrap() {
                     // the simple case in which the param of the lambda is an identifier as in
                     // `f = x: ...` x is an identifier.
-                    rnix::ast::Param::IdentParam(idp) => Term::Fun(
-                        id_from_nix(idp.ident().unwrap(), state),
-                        // TODO: add the `id` to `state.env`
-                        n.body().unwrap().translate(state),
-                    ),
+                    rnix::ast::Param::IdentParam(idp) => {
+                        let idp_ident = idp.ident().unwrap();
+                        state.env.insert(idp_ident.to_string());
+                        Term::Fun(
+                            id_from_nix(idp_ident, &state),
+                            n.body().unwrap().translate(&state),
+                        )
+                    }
                     // the param is a pattern as we generaly see in NixOS modules (`{pkgs, lib,
                     // ...}:`
                     rnix::ast::Param::Pattern(pat) => {
-                        // TODO: add the matched identifiers to `state.env`
                         use crate::term::pattern::*;
                         let patterns = pat
                             .pat_entries()
                             .map(|e| {
+                                let e_ident = e.ident().unwrap();
+                                state.env.insert(e_ident.to_string());
                                 // manage default values:
                                 let default =
-                                    e.default().and_then(|def| Some(def.translate(state)));
-                                let id = id_from_nix(e.ident().unwrap(), state);
+                                    e.default().and_then(|def| Some(def.translate(&state)));
+                                let id = id_from_nix(e_ident, &state);
                                 let annotation = TypeAnnotation {
                                     typ: None,
                                     contracts: vec![],
@@ -353,7 +365,7 @@ impl ToNickel for rnix::ast::Expr {
                             alias: None,
                             pos,
                         };
-                        Term::FunPattern(pattern, n.body().unwrap().translate(state))
+                        Term::FunPattern(pattern, n.body().unwrap().translate(&state))
                     }
                 }
             }
