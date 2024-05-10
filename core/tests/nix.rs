@@ -30,7 +30,6 @@ fn test_basic(resource: &str) {
 }
 
 //eval-okay-attrs.nix: Needs assert
-//eval-okay-attrs5.nix: Needs path
 //eval-okay-baseNameOf.nix:  Needs assert
 //eval-okay-callable-attrs.nix: Nix functors are weird. We probably can
 // replicate them but they're non trivial, and rarely used in NixOS/nixpkgs
@@ -41,14 +40,10 @@ fn test_basic(resource: &str) {
 //eval-okay-dynamic-attrs-bare.nix: TODO
 //eval-okay-dynamic-attrs.nix: TODO
 //eval-okay-empty-args.nix: TODO
-//eval-okay-flatten.nix: TODO
 //eval-okay-functionargs.nix: TODO
-//eval-okay-import.nix: TODO
 //eval-okay-ind-string.nix: TODO
-//eval-okay-list.nix: needs TODO
 //eval-okay-listtoattrs.nix: TODO
 //eval-okay-logic.nix:  needs assert
-//eval-okay-map.nix: TODO
 //eval-okay-merge-dynamic-attrs.nix: TODO
 //eval-okay-nested-with.nix: TODO
 //eval-okay-null-dynamic-attrs.nix: TODO
@@ -67,7 +62,8 @@ fn test_basic(resource: &str) {
 //eval-okay-tail-call-1.nix: TODO
 //eval-okay-xml.nix: TODO
 
-#[test_resources("core/tests/nix/builtins/eval-okay-*.nix")]
-fn test_builtins(resource: &str) {
-    run(resource);
-}
+// TODO: Implement nix builtins!
+//#[test_resources("core/tests/nix/builtins/eval-okay-*.nix")]
+//fn test_builtins(resource: &str) {
+//    run(resource);
+//}

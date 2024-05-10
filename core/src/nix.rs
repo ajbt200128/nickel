@@ -11,8 +11,8 @@ use crate::term::{record::Field, RichTerm, Term};
 use crate::term::{record::RecordData, BinaryOp, UnaryOp};
 use codespan::FileId;
 use rnix::ast::{
-    Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry, Ident as NixIdent, Str as NixStr,
-    UnaryOp as NixUniOp,
+    AstToken, Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry, Ident as NixIdent,
+    InterpolPart, Str as NixStr, UnaryOp as NixUniOp,
 };
 use rowan::ast::{AstChildren, AstNode};
 use std::collections::HashMap;
@@ -58,7 +58,6 @@ fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<Attrp
 
 impl ToNickel for NixStr {
     fn translate(self, state: &State) -> RichTerm {
-        use rnix::ast::InterpolPart;
         Term::StrChunks(
             self.normalized_parts()
                 .into_iter()
@@ -447,7 +446,22 @@ impl ToNickel for rnix::ast::Expr {
                     n.expr().unwrap().translate(state)
                 )
             }
-            Expr::Path(_) => unimplemented!(),
+            Expr::Path(n) => {
+                // lets just add the path as a string since nickel doesn't have a path syntax
+                // and just uses strings
+                let parts = n.parts().map(|p| {
+                    if let InterpolPart::Literal(s) = p {
+                        s.syntax().text().to_string()
+                    } else {
+                        // rnix doesn't seem to expect to be able to parse this so we shouldn't either
+                        unreachable!("unexpected interpol {:?}", p)
+                    }
+                });
+                // join with "/" to have a string representation of the path.
+                // TODO: Do we support windows paths? Probably not...
+                let path = parts.collect::<Vec<_>>().join("/");
+                Term::Str(path.into()).into()
+            }
         }
         // set the position in the AST to try to have some sort of debuging support.
         .with_pos(crate::position::TermPos::Original(span))
