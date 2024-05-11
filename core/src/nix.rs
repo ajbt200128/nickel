@@ -11,10 +11,10 @@ use crate::term::{record::Field, RichTerm, Term};
 use crate::term::{record::RecordData, BinaryOp, UnaryOp};
 use codespan::FileId;
 use rnix::ast::{
-    AstToken, Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry, Ident as NixIdent,
-    InterpolPart, Str as NixStr, UnaryOp as NixUniOp,
+    AstNode, AstToken, Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry,
+    Ident as NixIdent, InterpolPart, Str as NixStr, UnaryOp as NixUniOp,
 };
-use rowan::ast::{AstChildren, AstNode};
+use rowan::ast::AstChildren;
 use std::collections::HashMap;
 
 pub type NixParseError = rnix::parser::ParseError;
@@ -41,10 +41,15 @@ where
     n.attrs().map(|a| path_elem_rt(a, state)).collect()
 }
 
-fn id_from_nix(id: NixIdent, state: &State) -> LocIdent {
-    let pos = id.syntax().text_range();
+fn pos_from_nix(node: &dyn AstNode, state: &State) -> TermPos {
+    let pos = node.syntax().text_range();
     let span = mk_span(state.file_id, pos.start().into(), pos.end().into());
-    LocIdent::new_with_pos(id.to_string(), crate::position::TermPos::Original(span))
+    TermPos::Original(span)
+}
+
+fn id_from_nix(id: NixIdent, state: &State) -> LocIdent {
+    let pos = pos_from_nix(&id, state);
+    LocIdent::new_with_pos(id.to_string(), pos)
 }
 
 fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<AttrpathValue>) {
@@ -58,7 +63,8 @@ fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<Attrp
 
 impl ToNickel for NixStr {
     fn translate(self, state: &State) -> RichTerm {
-        Term::StrChunks(
+        let pos = pos_from_nix(&self, state);
+        let chunks = Term::StrChunks(
             self.normalized_parts()
                 .into_iter()
                 .enumerate()
@@ -70,8 +76,9 @@ impl ToNickel for NixStr {
                 })
                 .rev() // parts come in reverse order for some reason
                 .collect(),
-        )
-        .into()
+        );
+
+        RichTerm::new(chunks, pos)
     }
 }
 
@@ -125,9 +132,7 @@ impl ToNickel for NixBinOp {
 impl ToNickel for rnix::ast::Expr {
     fn translate(self, state: &State) -> RichTerm {
         use rnix::ast::Expr;
-        let pos = self.syntax().text_range();
-        let file_id = state.file_id;
-        let span = mk_span(file_id, pos.start().into(), pos.end().into());
+        let pos = pos_from_nix(&self, state);
 
         #[cfg(debug_assertions)]
         eprintln!("{self:?}: {self}");
@@ -137,7 +142,7 @@ impl ToNickel for rnix::ast::Expr {
             // May not be the better way to do, but this version of the code does not realy have
             // error management for the nix side.
             Expr::Error(_) => {
-                Term::ParseError(crate::error::ParseError::NixParseError(file_id)).into()
+                Term::ParseError(crate::error::ParseError::NixParseError(state.file_id)).into()
                 // TODO: Improve error management
             }
             // The Root of a file. generaly, this field is not matched because the common way to
@@ -248,10 +253,9 @@ impl ToNickel for rnix::ast::Expr {
                             "`let {id}` is forbidden. Can not redefine `true`, `false` or `null`"
                         ),
                         s => {
-                            let pos = id.syntax().text_range();
-                            let span = mk_span(state.file_id, pos.start().into(), pos.end().into());
+                            let pos = pos_from_nix(&id, &state);
                             // give a position to the identifier.
-                            LocIdent::new_with_pos(s, crate::position::TermPos::Original(span))
+                            LocIdent::new_with_pos(s, pos)
                         }
                     };
                     let rt = kv.value().unwrap().translate(&state);
@@ -276,7 +280,6 @@ impl ToNickel for rnix::ast::Expr {
                     patterns_vec.push(field_pattern);
                     fields.insert(id, rt);
                 }
-                let pos = TermPos::Original(span);
                 let record_pattern = RecordPattern {
                     patterns: patterns_vec,
                     tail: RecordPatternTail::Empty,
@@ -353,7 +356,8 @@ impl ToNickel for rnix::ast::Expr {
                                 }
                             })
                             .collect();
-                        let pos = TermPos::Original(span);
+
+                        let pos = pos_from_nix(&pat, &state);
                         let record_pattern = RecordPattern {
                             patterns,
                             tail: RecordPatternTail::Empty,
@@ -464,7 +468,7 @@ impl ToNickel for rnix::ast::Expr {
             }
         }
         // set the position in the AST to try to have some sort of debuging support.
-        .with_pos(crate::position::TermPos::Original(span))
+        .with_pos(pos)
     }
 }
 

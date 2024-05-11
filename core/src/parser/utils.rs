@@ -148,6 +148,7 @@ impl FieldDef {
                     FieldPathElem::Expr(ref expr) => expr.pos,
                 };
                 // unwrap is safe here because every id should have a non-`TermPos::None` position
+                println!("PATH_ELEM {:?}", path_elem);
                 let id_span = pos.unwrap();
                 let acc_span = acc
                     .value
