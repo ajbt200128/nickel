@@ -327,6 +327,7 @@ impl ToNickel for rnix::ast::Expr {
                     // the param is a pattern as we generaly see in NixOS modules (`{pkgs, lib,
                     // ...}:`
                     rnix::ast::Param::Pattern(pat) => {
+                        // TODO: Does not support if args are empty, e.g. nix`{}: 1`
                         use crate::term::pattern::*;
                         let patterns = pat
                             .pat_entries()
