@@ -282,7 +282,7 @@ impl ToNickel for rnix::ast::Expr {
                 }
                 let record_pattern = RecordPattern {
                     patterns: patterns_vec,
-                    tail: RecordPatternTail::Empty,
+                    tail: TailPattern::Empty,
                     pos,
                 };
                 let pattern = Pattern {
@@ -361,7 +361,7 @@ impl ToNickel for rnix::ast::Expr {
                         let pos = pos_from_nix(&pat, &state);
                         let record_pattern = RecordPattern {
                             patterns,
-                            tail: RecordPatternTail::Empty,
+                            tail: TailPattern::Empty,
                             pos,
                         };
                         let pattern = Pattern {
