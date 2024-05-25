@@ -60,8 +60,8 @@ use crate::{
     identifier::{Ident, LocIdent},
     stdlib as nickel_stdlib,
     term::{
-        pattern::Pattern, record::Field, LabeledType, RichTerm, StrChunk, Term, Traverse,
-        TraverseOrder, TypeAnnotation,
+        record::Field, LabeledType, MatchBranch, RichTerm, StrChunk, Term, Traverse, TraverseOrder,
+        TypeAnnotation,
     },
     typ::*,
     {mk_uty_arrow, mk_uty_enum, mk_uty_record, mk_uty_record_row},
@@ -224,9 +224,12 @@ impl<E: TermEnvironment> VarLevelUpperBound for GenericUnifType<E> {
 impl<E: TermEnvironment> VarLevelUpperBound for GenericUnifTypeUnrolling<E> {
     fn var_level_upper_bound(&self) -> VarLevel {
         match self {
-            TypeF::Dyn | TypeF::Bool | TypeF::Number | TypeF::String | TypeF::Symbol => {
-                VarLevel::NO_VAR
-            }
+            TypeF::Dyn
+            | TypeF::Bool
+            | TypeF::Number
+            | TypeF::String
+            | TypeF::ForeignId
+            | TypeF::Symbol => VarLevel::NO_VAR,
             TypeF::Arrow(domain, codomain) => max(
                 domain.var_level_upper_bound(),
                 codomain.var_level_upper_bound(),
@@ -1440,6 +1443,7 @@ fn walk<V: TypecheckVisitor>(
         | Term::Str(_)
         | Term::Lbl(_)
         | Term::Enum(_)
+        | Term::ForeignId(_)
         | Term::SealingKey(_)
         // This function doesn't recursively typecheck imports: this is the responsibility of the
         // caller.
@@ -1534,11 +1538,11 @@ fn walk<V: TypecheckVisitor>(
             walk(state, ctxt, visitor, t)
         }
         Term::Match(data) => {
-            data.branches.iter().try_for_each(|(pat, branch)| {
+            data.branches.iter().try_for_each(|MatchBranch { pattern, guard, body }| {
                 let mut local_ctxt = ctxt.clone();
-                let PatternTypeData { bindings: pat_bindings, .. } = pat.data.pattern_types(state, &ctxt, pattern::TypecheckMode::Walk)?;
+                let PatternTypeData { bindings: pat_bindings, .. } = pattern.data.pattern_types(state, &ctxt, pattern::TypecheckMode::Walk)?;
 
-                if let Some(alias) = &pat.alias {
+                if let Some(alias) = &pattern.alias {
                     visitor.visit_ident(alias, mk_uniftype::dynamic());
                     local_ctxt.type_env.insert(alias.ident(), mk_uniftype::dynamic());
                 }
@@ -1548,12 +1552,12 @@ fn walk<V: TypecheckVisitor>(
                     local_ctxt.type_env.insert(id.ident(), typ);
                 }
 
-                walk(state, local_ctxt, visitor, branch)
-            })?;
+                if let Some(guard) = guard {
+                    walk(state, local_ctxt.clone(), visitor, guard)?;
+                }
 
-            if let Some(default) = &data.default {
-                walk(state, ctxt, visitor, default)?;
-            }
+                walk(state, local_ctxt, visitor, body)
+            })?;
 
             Ok(())
         }
@@ -1632,6 +1636,7 @@ fn walk_type<V: TypecheckVisitor>(
        | TypeF::Number
        | TypeF::Bool
        | TypeF::String
+       | TypeF::ForeignId
        | TypeF::Symbol
        // Currently, the parser can't generate unbound type variables by construction. Thus we
        // don't check here for unbound type variables again.
@@ -1878,7 +1883,7 @@ fn check<V: TypecheckVisitor>(
                 pat.data
                     .pattern_types(state, &ctxt, pattern::TypecheckMode::Enforce)?;
             // In the destructuring case, there's no alternative pattern, and we must thus
-            // immediatly close all the row types.
+            // immediately close all the row types.
             pattern::close_all_enums(pat_types.enum_open_tails, state);
 
             let src = pat_types.typ;
@@ -1999,18 +2004,21 @@ fn check<V: TypecheckVisitor>(
             // introduced to open enum rows and close the corresponding rows at the end of the
             // procedure).
 
-            // We zip the pattern types with each case
+            // We zip the pattern types with each branch
             let with_pat_types = data
                 .branches
                 .iter()
-                .map(|(pat, branch)| -> Result<_, TypecheckError> {
+                .map(|branch| -> Result<_, TypecheckError> {
                     Ok((
-                        pat,
-                        pat.pattern_types(state, &ctxt, pattern::TypecheckMode::Enforce)?,
                         branch,
+                        branch.pattern.pattern_types(
+                            state,
+                            &ctxt,
+                            pattern::TypecheckMode::Enforce,
+                        )?,
                     ))
                 })
-                .collect::<Result<Vec<(&Pattern, PatternTypeData<_>, &RichTerm)>, _>>()?;
+                .collect::<Result<Vec<(&MatchBranch, PatternTypeData<_>)>, _>>()?;
 
             // A match expression is a special kind of function. Thus it's typed as `a -> b`, where
             // `a` is a type determined by the patterns and `b` is the type of each match arm.
@@ -2018,9 +2026,17 @@ fn check<V: TypecheckVisitor>(
             let return_type = state.table.fresh_type_uvar(ctxt.var_level);
 
             // Express the constraint that all the arms of the match expression should have a
-            // compatible type.
-            for (pat, pat_types, arm) in with_pat_types.iter() {
-                if let Some(alias) = &pat.alias {
+            // compatible type and that each guard must be a boolean.
+            for (
+                MatchBranch {
+                    pattern,
+                    guard,
+                    body,
+                },
+                pat_types,
+            ) in with_pat_types.iter()
+            {
+                if let Some(alias) = &pattern.alias {
                     visitor.visit_ident(alias, return_type.clone());
                     ctxt.type_env.insert(alias.ident(), return_type.clone());
                 }
@@ -2030,16 +2046,14 @@ fn check<V: TypecheckVisitor>(
                     ctxt.type_env.insert(id.ident(), typ.clone());
                 }
 
-                check(state, ctxt.clone(), visitor, arm, return_type.clone())?;
+                if let Some(guard) = guard {
+                    check(state, ctxt.clone(), visitor, guard, mk_uniftype::bool())?;
+                }
+
+                check(state, ctxt.clone(), visitor, body, return_type.clone())?;
             }
 
-            if let Some(default) = &data.default {
-                check(state, ctxt.clone(), visitor, default, return_type.clone())?;
-            }
-
-            let pat_types = with_pat_types
-                .into_iter()
-                .map(|(_, pat_types, _)| pat_types);
+            let pat_types = with_pat_types.into_iter().map(|(_, pat_types)| pat_types);
 
             // Unify all the pattern types with the argument's type, and build the list of all open
             // tail vars
@@ -2047,6 +2061,14 @@ fn check<V: TypecheckVisitor>(
                 pat_types
                     .clone()
                     .map(|pat_type| pat_type.enum_open_tails.len())
+                    .sum(),
+            );
+
+            // Build the list of all wildcard pattern occurrences
+            let mut wildcard_occurrences = HashSet::with_capacity(
+                pat_types
+                    .clone()
+                    .map(|pat_type| pat_type.wildcard_occurrences.len())
                     .sum(),
             );
 
@@ -2064,17 +2086,16 @@ fn check<V: TypecheckVisitor>(
                     }
 
                     enum_open_tails.extend(pat_type.enum_open_tails);
+                    wildcard_occurrences.extend(pat_type.wildcard_occurrences);
 
                     Ok(())
                 });
 
-            if data.default.is_some() {
-                // If there is a default value, we don't close the potential top-level enum type
-                pattern::close_enums(enum_open_tails, |path| !path.is_empty(), state);
-            } else {
-                pattern::close_all_enums(enum_open_tails, state);
-            }
+            // Once we have accumulated all the information about enum rows and wildcard
+            // occurrences, we can finally close the tails that need to be.
+            pattern::close_enums(enum_open_tails, &wildcard_occurrences, state);
 
+            // And finally fail if there was an error.
             pat_unif_result.map_err(|err| err.into_typecheck_err(state, rt.pos))?;
 
             // We unify the expected type of the match expression with `arg_type -> return_type`.
@@ -2094,7 +2115,9 @@ fn check<V: TypecheckVisitor>(
             // as desired.
             //
             // As a safety net, the tail closing code panics (in debug mode) if it finds a rigid
-            // type variable at the end of the tail of a pattern type.
+            // type variable at the end of the tail of a pattern type, which would happen if we
+            // somehow generalized an enum row type variable before properly closing the tails
+            // before.
             ty.unify(
                 mk_uty_arrow!(arg_type.clone(), return_type.clone()),
                 state,
@@ -2278,6 +2301,9 @@ fn check<V: TypecheckVisitor>(
             }
         }
 
+        Term::ForeignId(_) => ty
+            .unify(mk_uniftype::foreign_id(), state, &ctxt)
+            .map_err(|err| err.into_typecheck_err(state, rt.pos)),
         Term::SealingKey(_) => ty
             .unify(mk_uniftype::sym(), state, &ctxt)
             .map_err(|err| err.into_typecheck_err(state, rt.pos)),

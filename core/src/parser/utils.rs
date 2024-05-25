@@ -79,13 +79,6 @@ pub enum StringEndDelimiter {
     Special,
 }
 
-/// Distinguish between a normal case `id => exp` and a default case `_ => exp`.
-#[derive(Clone, Debug)]
-pub enum MatchCase {
-    Normal(Pattern, RichTerm),
-    Default(RichTerm),
-}
-
 /// Left hand side of a record field declaration.
 #[derive(Clone, Debug)]
 pub enum FieldPathElem {
@@ -158,7 +151,7 @@ impl FieldDef {
 
                 // `RawSpan::fuse` only returns `None` when the two spans are in different files.
                 // A record field and its value *must* be in the same file, so this is safe.
-                let pos = TermPos::Original(RawSpan::fuse(id_span, acc_span).unwrap());
+                let pos = TermPos::Original(id_span.fuse(acc_span).unwrap());
 
                 match path_elem {
                     FieldPathElem::Ident(id) => {

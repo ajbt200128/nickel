@@ -17,17 +17,17 @@
 //! to handle before that). We might revisit this in the future if pattern matching turns out to be
 //! a bottleneck.
 //!
-//! Most build blocks are generated programmatically rather than written out as e.g. members of the
-//! [internals] stdlib module. While clunkier, this lets more easily change the compilation
-//! strategy in the future and is already a more efficient in the current setting (combining
+//! Most building blocks are generated programmatically rather than written out as e.g. members of
+//! the [crate::stdlib::internals] module. While clunkier, this makes it easier to change
+//! the compilation strategy in the future and is more efficient in the current setting (combining
 //! building blocks from the standard library would require much more function applications, while
 //! we can generate inlined versions on-the-fly here).
 use super::*;
 use crate::{
     mk_app,
     term::{
-        make, record::FieldMetadata, BinaryOp, MatchData, RecordExtKind, RecordOpKind, RichTerm,
-        Term, UnaryOp,
+        make, record::FieldMetadata, BinaryOp, MatchBranch, MatchData, NAryOp, RecordExtKind,
+        RecordOpKind, RichTerm, Term, UnaryOp,
     },
 };
 
@@ -184,7 +184,7 @@ fn update_with_merge(record_id: LocIdent, id: LocIdent, field: Field) -> RichTer
         // We fuse all the definite spans together.
         // unwrap(): all span should come from the same file
         // unwrap(): we hope that at least one position is defined
-        .reduce(|span1, span2| crate::position::RawSpan::fuse(span1, span2).unwrap())
+        .reduce(|span1, span2| span1.fuse(span2).unwrap())
         .unwrap();
 
     let merge_label = MergeLabel {
@@ -252,13 +252,95 @@ impl CompilePart for Pattern {
 impl CompilePart for PatternData {
     fn compile_part(&self, value_id: LocIdent, bindings_id: LocIdent) -> RichTerm {
         match self {
+            PatternData::Wildcard => Term::Var(bindings_id).into(),
             PatternData::Any(id) => {
                 // %record_insert% "<id>" value_id bindings_id
                 insert_binding(*id, value_id, bindings_id)
             }
             PatternData::Record(pat) => pat.compile_part(value_id, bindings_id),
+            PatternData::Array(pat) => pat.compile_part(value_id, bindings_id),
             PatternData::Enum(pat) => pat.compile_part(value_id, bindings_id),
+            PatternData::Constant(pat) => pat.compile_part(value_id, bindings_id),
+            PatternData::Or(pat) => pat.compile_part(value_id, bindings_id),
         }
+    }
+}
+
+impl CompilePart for ConstantPattern {
+    fn compile_part(&self, value_id: LocIdent, bindings_id: LocIdent) -> RichTerm {
+        self.data.compile_part(value_id, bindings_id)
+    }
+}
+
+impl CompilePart for ConstantPatternData {
+    fn compile_part(&self, value_id: LocIdent, bindings_id: LocIdent) -> RichTerm {
+        let compile_constant = |nickel_type: &str, value: Term| {
+            // if %typeof% value_id == '<nickel_type> && value_id == <value> then
+            //   bindings_id
+            // else
+            //   null
+
+            // %typeof% value_id == '<nickel_type>
+            let type_matches = make::op2(
+                BinaryOp::Eq(),
+                make::op1(UnaryOp::Typeof(), Term::Var(value_id)),
+                Term::Enum(nickel_type.into()),
+            );
+
+            // value_id == <value>
+            let value_matches = make::op2(BinaryOp::Eq(), Term::Var(value_id), value);
+
+            // <type_matches> && <value_matches>
+            let if_condition = mk_app!(make::op1(UnaryOp::BoolAnd(), type_matches), value_matches);
+
+            make::if_then_else(if_condition, Term::Var(bindings_id), Term::Null)
+        };
+
+        match self {
+            ConstantPatternData::Bool(b) => compile_constant("Bool", Term::Bool(*b)),
+            ConstantPatternData::Number(n) => compile_constant("Number", Term::Num(n.clone())),
+            ConstantPatternData::String(s) => compile_constant("String", Term::Str(s.clone())),
+            ConstantPatternData::Null => compile_constant("Other", Term::Null),
+        }
+    }
+}
+
+impl CompilePart for OrPattern {
+    // Compilation of or patterns.
+    //
+    //  <fold pattern in patterns
+    //   - cont is the accumulator
+    //   - initial accumulator is `null`
+    //  >
+    //
+    //  let prev_bindings = cont in
+    //
+    //  # if one of the previous patterns already matched, we just stop here and return the
+    //  # resulting updated bindings. Otherwise, we try the current one
+    //  if prev_bindings != null then
+    //    prev_bindings
+    //  else
+    //    <pattern.compile(value_id, bindings_id)>
+    //  <end fold>
+    fn compile_part(&self, value_id: LocIdent, bindings_id: LocIdent) -> RichTerm {
+        self.patterns
+            .iter()
+            .fold(Term::Null.into(), |cont, pattern| {
+                let prev_bindings = LocIdent::fresh();
+
+                let is_prev_not_null = make::op1(
+                    UnaryOp::BoolNot(),
+                    make::op2(BinaryOp::Eq(), Term::Var(prev_bindings), Term::Null),
+                );
+
+                let if_block = make::if_then_else(
+                    is_prev_not_null,
+                    Term::Var(prev_bindings),
+                    pattern.compile_part(value_id, bindings_id),
+                );
+
+                make::let_in(prev_bindings, cont, if_block)
+            })
     }
 }
 
@@ -271,7 +353,7 @@ impl CompilePart for RecordPattern {
     //
     // We don't have tuples, and to avoid adding an indirection (by storing the current state
     // as `{rest, bindings}` where bindings itself is a record), we store this rest alongside
-    // the bindings in a special field which is a freshly generated indentifier. This is an
+    // the bindings in a special field which is a freshly generated identifier. This is an
     // implementation detail which isn't very hard to change, should we have to.
     //
     // if %typeof% value_id == 'Record
@@ -478,7 +560,7 @@ impl CompilePart for RecordPattern {
             //   null
             // else
             //   %record_remove% "<REST>" final_bindings_id
-            RecordPatternTail::Empty => make::if_then_else(
+            TailPattern::Empty => make::if_then_else(
                 make::op1(
                     UnaryOp::BoolNot(),
                     make::op2(
@@ -498,7 +580,7 @@ impl CompilePart for RecordPattern {
             //     final_bindings_id
             //     (%static_access% <REST_FIELD> final_bindings_id)
             //   )
-            RecordPatternTail::Capture(rest) => make::op2(
+            TailPattern::Capture(rest) => make::op2(
                 BinaryOp::DynRemove(RecordOpKind::ConsiderAllFields),
                 Term::Str(rest_field.into()),
                 mk_app!(
@@ -514,7 +596,7 @@ impl CompilePart for RecordPattern {
                 ),
             ),
             // %record_remove% "<REST>" final_bindings_id
-            RecordPatternTail::Open => bindings_without_rest,
+            TailPattern::Open => bindings_without_rest,
         };
 
         // the last `final_bindings_id != null` guard:
@@ -535,6 +617,170 @@ impl CompilePart for RecordPattern {
 
         // if <is_record> then <outer_let> else null
         make::if_then_else(is_record, outer_let, Term::Null)
+    }
+}
+
+impl CompilePart for ArrayPattern {
+    // Compilation of an array pattern.
+    //
+    // let value_len = %array_length% value_id in
+    //
+    // <if self.is_open()>
+    // if %typeof% value_id == 'Array && value_len >= <self.patterns.len()>
+    // <else>
+    // if %typeof% value_id == 'Array && value_len == <self.patterns.len()>
+    // <end if>
+    //
+    //   let final_bindings_id =
+    //     <fold (idx, elem_pat) in 0..self.patterns.len()
+    //      - cont is the accumulator
+    //      - initial accumulator is `bindings_id`
+    //      >
+    //
+    //       let local_bindings_id = cont in
+    //       if local_bindings_id == null then
+    //         null
+    //       else
+    //         let local_value_id = %array_access% <idx> value_id in
+    //         <elem_pat.compile_part(local_value_id, local_bindings_id)>
+    //
+    //     <end fold>
+    //   in
+    //
+    //   if final_bindings_id == null then
+    //     null
+    //   else
+    //     <if self.tail is capture(rest)>
+    //       %record_insert%
+    //         <rest>
+    //         final_bindings_id
+    //         (%array_slice% <self.patterns.len()> value_len value_id)
+    //     <else>
+    //       final_bindings_id
+    //     <end if>
+    // else
+    //   null
+    fn compile_part(&self, value_id: LocIdent, bindings_id: LocIdent) -> RichTerm {
+        let value_len_id = LocIdent::fresh();
+        let pats_len = Term::Num(self.patterns.len().into());
+
+        //     <fold (idx) in 0..self.patterns.len()
+        //      - cont is the accumulator
+        //      - initial accumulator is `bindings_id`
+        //      >
+        //
+        //       let local_bindings_id = cont in
+        //       if local_bindings_id == null then
+        //         null
+        //       else
+        //         let local_value_id = %array_access% <idx> value_id in
+        //         <self.patterns[idx].compile_part(local_value_id, local_bindings_id)>
+        //
+        //     <end fold>
+        let fold_block: RichTerm = self.patterns.iter().enumerate().fold(
+            Term::Var(bindings_id).into(),
+            |cont, (idx, elem_pat)| {
+                let local_bindings_id = LocIdent::fresh();
+                let local_value_id = LocIdent::fresh();
+
+                // <self.patterns[idx].compile_part(local_value_id, local_bindings_id)>
+                let updated_bindings_let = elem_pat.compile_part(local_value_id, local_bindings_id);
+
+                // %array_access% idx value_id
+                let extracted_value = make::op2(
+                    BinaryOp::ArrayElemAt(),
+                    Term::Var(value_id),
+                    Term::Num(idx.into()),
+                );
+
+                // let local_value_id = <extracted_value> in <updated_bindings_let>
+                let inner_else_block =
+                    make::let_in(local_value_id, extracted_value, updated_bindings_let);
+
+                // The innermost if:
+                //
+                // if local_bindings_id == null then
+                //   null
+                // else
+                //  <inner_else_block>
+                let inner_if = make::if_then_else(
+                    make::op2(BinaryOp::Eq(), Term::Var(local_bindings_id), Term::Null),
+                    Term::Null,
+                    inner_else_block,
+                );
+
+                // let local_bindings_id = cont in <inner_if>
+                make::let_in(local_bindings_id, cont, inner_if)
+            },
+        );
+
+        // %typeof% value_id == 'Array
+        let is_array: RichTerm = make::op2(
+            BinaryOp::Eq(),
+            make::op1(UnaryOp::Typeof(), Term::Var(value_id)),
+            Term::Enum("Array".into()),
+        );
+
+        let comp_op = if self.is_open() {
+            BinaryOp::GreaterOrEq()
+        } else {
+            BinaryOp::Eq()
+        };
+
+        // <is_array> && value_len <comp_op> <self.patterns.len()>
+        let outer_check = mk_app!(
+            make::op1(UnaryOp::BoolAnd(), is_array),
+            make::op2(comp_op, Term::Var(value_len_id), pats_len.clone(),)
+        );
+
+        let final_bindings_id = LocIdent::fresh();
+
+        // the else block which depends on the tail of the record pattern
+        let tail_block = match self.tail {
+            // final_bindings_id
+            TailPattern::Empty | TailPattern::Open => make::var(final_bindings_id),
+            // %record_insert%
+            //    <rest>
+            //    final_bindings_id
+            //    (%array_slice% <self.patterns.len()> value_len value_id)
+            TailPattern::Capture(rest) => mk_app!(
+                make::op2(
+                    record_insert(),
+                    Term::Str(rest.label().into()),
+                    Term::Var(final_bindings_id),
+                ),
+                make::opn(
+                    NAryOp::ArraySlice(),
+                    vec![pats_len, Term::Var(value_len_id), Term::Var(value_id)]
+                )
+            ),
+        };
+
+        // the last `final_bindings_id != null` guard:
+        //
+        // if final_bindings_id == null then
+        //   null
+        // else
+        //   <tail_block>
+        let guard_tail_block = make::if_then_else(
+            make::op2(BinaryOp::Eq(), Term::Var(final_bindings_id), Term::Null),
+            Term::Null,
+            tail_block,
+        );
+
+        // The let enclosing the fold block and the let binding `final_bindings_id`:
+        // let final_bindings_id = <fold_block> in <tail_block>
+        let outer_let = make::let_in(final_bindings_id, fold_block, guard_tail_block);
+
+        // if <outer_check> then <outer_let> else null
+        let outer_if = make::if_then_else(outer_check, outer_let, Term::Null);
+
+        // finally, we need to bind `value_len_id` to the length of the array
+        make::let_in(
+            value_len_id,
+            make::op1(UnaryOp::ArrayLength(), Term::Var(value_id)),
+            outer_if,
+        )
     }
 }
 
@@ -626,90 +872,152 @@ impl Compile for MatchData {
     //    else
     //      # this primop evaluates body with an environment extended with bindings_id
     //      %pattern_branch% body bindings_id
-    fn compile(self, value: RichTerm, pos: TermPos) -> RichTerm {
-        if self.branches.iter().all(|(pat, _)| {
+    fn compile(mut self, value: RichTerm, pos: TermPos) -> RichTerm {
+        if self.branches.iter().all(|branch| {
+            // While we could get something working even with a guard, it's a bit more work and
+            // there's no current incentive to do so (a guard on a tags-only match is arguably less
+            // common, as such patterns don't bind any variable). For the time being, we just
+            // exclude guards from the tags-only optimization.
             matches!(
-                pat.data,
-                PatternData::Enum(EnumPattern { pattern: None, .. })
-            )
+                branch.pattern.data,
+                PatternData::Enum(EnumPattern { pattern: None, .. }) | PatternData::Wildcard
+            ) && branch.guard.is_none()
         }) {
-            let tags_only = self.branches.into_iter().map(|(pat, body)| {
-                let PatternData::Enum(EnumPattern {tag, ..}) = pat.data else {
-                    panic!("match compilation: just tested that all cases are enum tags, but found a non enum tag pattern");
-                };
+            let wildcard_pat = self.branches.iter().enumerate().find_map(
+                |(
+                    idx,
+                    MatchBranch {
+                        pattern,
+                        guard,
+                        body,
+                    },
+                )| {
+                    if matches!((&pattern.data, guard), (PatternData::Wildcard, None)) {
+                        Some((idx, body.clone()))
+                    } else {
+                        None
+                    }
+                },
+            );
 
-                (tag, body)
-            }).collect();
+            // If we find a wildcard pattern, we record its index in order to discard all the
+            // patterns coming after the wildcard, because they are unreachable.
+            let default = if let Some((idx, body)) = wildcard_pat {
+                self.branches.truncate(idx + 1);
+                Some(body)
+            } else {
+                None
+            };
+
+            let tags_only = self
+                .branches
+                .into_iter()
+                .filter_map(
+                    |MatchBranch {
+                         pattern,
+                         guard: _,
+                         body,
+                     }| {
+                        if let PatternData::Enum(EnumPattern { tag, .. }) = pattern.data {
+                            Some((tag, body))
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .collect();
 
             return TagsOnlyMatch {
                 branches: tags_only,
-                default: self.default,
+                default,
             }
             .compile(value, pos);
         }
 
-        let default_branch = self.default.unwrap_or_else(|| {
+        let error_case = RichTerm::new(
             Term::RuntimeError(EvalError::NonExhaustiveMatch {
                 value: value.clone(),
                 pos,
-            })
-            .into()
-        });
+            }),
+            pos,
+        );
+
         let value_id = LocIdent::fresh();
 
         // The fold block:
         //
-        // <for (pattern, body) in branches.rev()
+        // <for branch in branches.rev()
         //  - cont is the accumulator
         //  - initial accumulator is the default branch (or error if not default branch)
         // >
         //    let init_bindings_id = {} in
         //    let bindings_id = <pattern.compile_part(value_id, init_bindings)> in
         //
-        //    if bindings_id == null then
+        //    if bindings_id == null || !<guard> then
         //      cont
         //    else
         //      # this primop evaluates body with an environment extended with bindings_id
         //      %pattern_branch% body bindings_id
-        let fold_block =
-            self.branches
-                .into_iter()
-                .rev()
-                .fold(default_branch, |cont, (pat, body)| {
-                    let init_bindings_id = LocIdent::fresh();
-                    let bindings_id = LocIdent::fresh();
+        let fold_block = self
+            .branches
+            .into_iter()
+            .rev()
+            .fold(error_case, |cont, branch| {
+                let init_bindings_id = LocIdent::fresh();
+                let bindings_id = LocIdent::fresh();
 
-                    // inner if block:
-                    //
-                    // if bindings_id == null then
-                    //   cont
-                    // else
-                    //   # this primop evaluates body with an environment extended with bindings_id
-                    //   %pattern_branch% bindings_id body
-                    let inner = make::if_then_else(
-                        make::op2(BinaryOp::Eq(), Term::Var(bindings_id), Term::Null),
-                        cont,
-                        mk_app!(
-                            make::op1(UnaryOp::PatternBranch(), Term::Var(bindings_id),),
-                            body
-                        ),
+                // inner if condition:
+                // bindings_id == null || !<guard>
+                let inner_if_cond = make::op2(BinaryOp::Eq(), Term::Var(bindings_id), Term::Null);
+                let inner_if_cond = if let Some(guard) = branch.guard {
+                    // the guard must be evaluated in the same environment as the body of the
+                    // branch, as it might use bindings introduced by the pattern. Since `||` is
+                    // lazy in Nickel, we know that `bindings_id` is not null if the guard
+                    // condition is ever evaluated.
+                    let guard_cond = mk_app!(
+                        make::op1(UnaryOp::PatternBranch(), Term::Var(bindings_id)),
+                        guard
                     );
 
-                    // The two initial chained let-bindings:
-                    //
-                    // let init_bindings_id = {} in
-                    // let bindings_id = <pattern.compile_part(value_id, init_bindings)> in
-                    // <inner>
-                    make::let_in(
-                        init_bindings_id,
-                        Term::Record(RecordData::empty()),
-                        make::let_in(
-                            bindings_id,
-                            pat.compile_part(value_id, init_bindings_id),
-                            inner,
-                        ),
+                    mk_app!(
+                        make::op1(UnaryOp::BoolOr(), inner_if_cond),
+                        make::op1(UnaryOp::BoolNot(), guard_cond)
                     )
-                });
+                } else {
+                    inner_if_cond
+                };
+
+                // inner if block:
+                //
+                // if bindings_id == null then
+                //   cont
+                // else
+                //   # this primop evaluates body with an environment extended with bindings_id
+                //   %pattern_branch% bindings_id body
+                let inner = make::if_then_else(
+                    inner_if_cond,
+                    cont,
+                    mk_app!(
+                        make::op1(UnaryOp::PatternBranch(), Term::Var(bindings_id),),
+                        branch.body
+                    ),
+                );
+
+                // The two initial chained let-bindings:
+                //
+                // let init_bindings_id = {} in
+                // let bindings_id = <pattern.compile_part(value_id, init_bindings)> in
+                // <inner>
+                make::let_in(
+                    init_bindings_id,
+                    Term::Record(RecordData::empty()),
+                    make::let_in(
+                        bindings_id,
+                        branch.pattern.compile_part(value_id, init_bindings_id),
+                        inner,
+                    ),
+                )
+            });
 
         // let value_id = value in <fold_block>
         make::let_in(value_id, value, fold_block)

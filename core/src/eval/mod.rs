@@ -90,8 +90,8 @@ use crate::{
         make as mk_term,
         pattern::compile::Compile,
         record::{Field, RecordData},
-        BinaryOp, BindingType, LetAttrs, MatchData, RecordOpKind, RichTerm, RuntimeContract,
-        StrChunk, Term, UnaryOp,
+        BinaryOp, BindingType, LetAttrs, MatchBranch, MatchData, RecordOpKind, RichTerm,
+        RuntimeContract, StrChunk, Term, UnaryOp,
     },
 };
 
@@ -1157,6 +1157,7 @@ pub fn subst<C: Cache>(
         // loop. Although avoidable, this requires some care and is not currently needed.
         | v @ Term::Fun(..)
         | v @ Term::Lbl(_)
+        | v @ Term::ForeignId(_)
         | v @ Term::SealingKey(_)
         | v @ Term::Enum(_)
         | v @ Term::Import(_)
@@ -1189,20 +1190,18 @@ pub fn subst<C: Cache>(
             RichTerm::new(Term::App(t1, t2), pos)
         }
         Term::Match(data) => {
-            let default =
-                data.default.map(|d| subst(cache, d, initial_env, env));
-
             let branches = data.branches
                 .into_iter()
-                .map(|(pat, branch)| {
-                    (
-                        pat,
-                        subst(cache, branch, initial_env, env),
-                    )
+                .map(|MatchBranch { pattern, guard, body} | {
+                    MatchBranch {
+                        pattern,
+                        guard: guard.map(|cond| subst(cache, cond, initial_env, env)),
+                        body: subst(cache, body, initial_env, env),
+                    }
                 })
                 .collect();
 
-            RichTerm::new(Term::Match(MatchData { branches, default}), pos)
+            RichTerm::new(Term::Match(MatchData { branches }), pos)
         }
         Term::Op1(op, t) => {
             let t = subst(cache, t, initial_env, env);

@@ -2,10 +2,9 @@ use std::fmt;
 
 use crate::identifier::LocIdent;
 use crate::parser::lexer::KEYWORDS;
-use crate::term::pattern::{EnumPattern, Pattern, PatternData, RecordPattern, RecordPatternTail};
-use crate::term::record::RecordData;
 use crate::term::{
-    record::{Field, FieldMetadata},
+    pattern::*,
+    record::{Field, FieldMetadata, RecordData},
     *,
 };
 use crate::typ::*;
@@ -401,19 +400,19 @@ where
         typ.pretty(self).parens_if(needs_parens_in_type_pos(typ))
     }
 
-    /// Pretty printing of a restricted patterns that requires enum variant patterns to be
-    /// parenthesized (typically function pattern arguments). The only difference with a general
-    /// pattern is that for a function, a top-level enum variant pattern with an enum tag as an
-    /// argument such as `'Foo 'Bar` must be parenthesized, because `fun 'Foo 'Bar => ...` is
-    /// parsed as a function of two arguments, which are bare enum tags `'Foo` and `'Bar`. We must
-    /// print `fun ('Foo 'Bar) => ..` instead.
+    /// Pretty printing of a restricted patterns that requires enum variant patterns and or
+    /// patterns to be parenthesized (typically function pattern arguments). The only difference
+    /// with a general pattern is that for a function, a top-level enum variant pattern with an
+    /// enum tag as an argument such as `'Foo 'Bar` must be parenthesized, because `fun 'Foo 'Bar
+    /// => ...` is parsed as a function of two arguments, which are bare enum tags `'Foo` and
+    /// `'Bar`. We must print `fun ('Foo 'Bar) => ..` instead.
     fn pat_with_parens(&'a self, pattern: &Pattern) -> DocBuilder<'a, Self, A> {
         pattern.pretty(self).parens_if(matches!(
             pattern.data,
             PatternData::Enum(EnumPattern {
                 pattern: Some(_),
                 ..
-            })
+            }) | PatternData::Or(_)
         ))
     }
 }
@@ -586,9 +585,40 @@ where
 {
     fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
         match self {
+            PatternData::Wildcard => allocator.text("_"),
             PatternData::Any(id) => allocator.as_string(id),
             PatternData::Record(rp) => rp.pretty(allocator),
+            PatternData::Array(ap) => ap.pretty(allocator),
             PatternData::Enum(evp) => evp.pretty(allocator),
+            PatternData::Constant(cp) => cp.pretty(allocator),
+            PatternData::Or(op) => op.pretty(allocator),
+        }
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &ConstantPattern
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        self.data.pretty(allocator)
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &ConstantPatternData
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        match self {
+            ConstantPatternData::Bool(b) => allocator.as_string(b),
+            ConstantPatternData::Number(n) => allocator.as_string(format!("{}", n.to_sci())),
+            ConstantPatternData::String(s) => allocator.escaped_string(s).double_quotes(),
+            ConstantPatternData::Null => allocator.text("null"),
         }
     }
 }
@@ -660,15 +690,65 @@ where
                 allocator.line()
             ),
             match tail {
-                RecordPatternTail::Empty => allocator.nil(),
-                RecordPatternTail::Open => docs![allocator, allocator.line(), ".."],
-                RecordPatternTail::Capture(id) =>
+                TailPattern::Empty => allocator.nil(),
+                TailPattern::Open => docs![allocator, allocator.line(), ".."],
+                TailPattern::Capture(id) =>
                     docs![allocator, allocator.line(), "..", id.ident().to_string()],
             },
         ]
         .nest(2)
         .append(allocator.line())
         .braces()
+        .group()
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &ArrayPattern
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        docs![
+            allocator,
+            allocator.intersperse(
+                self.patterns.iter(),
+                docs![allocator, ",", allocator.line()],
+            ),
+            if !self.patterns.is_empty() && self.is_open() {
+                docs![allocator, ",", allocator.line()]
+            } else {
+                allocator.nil()
+            },
+            match self.tail {
+                TailPattern::Empty => allocator.nil(),
+                TailPattern::Open => allocator.text(".."),
+                TailPattern::Capture(id) => docs![allocator, "..", id.ident().to_string()],
+            },
+        ]
+        .nest(2)
+        .brackets()
+        .group()
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &OrPattern
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        docs![
+            allocator,
+            allocator.intersperse(
+                self.patterns
+                    .iter()
+                    .map(|pat| allocator.pat_with_parens(pat)),
+                docs![allocator, allocator.line(), "or", allocator.space()],
+            ),
+        ]
         .group()
     }
 }
@@ -856,21 +936,12 @@ where
                     allocator,
                     allocator.line(),
                     allocator.intersperse(
-                        data.branches
-                            .iter()
-                            .map(|(pat, t)| (pat.pretty(allocator), t))
-                            .chain(data.default.iter().map(|d| (allocator.text("_"), d)))
-                            .map(|(lhs, t)| docs![
-                                allocator,
-                                lhs,
-                                allocator.space(),
-                                "=>",
-                                allocator.line(),
-                                t,
-                                ","
-                            ]
-                            .nest(2)),
-                        allocator.line()
+                        data.branches.iter().map(|branch| docs![
+                            allocator,
+                            branch.pretty(allocator),
+                            ","
+                        ]),
+                        allocator.line(),
                     ),
                 ]
                 .nest(2)
@@ -948,6 +1019,7 @@ where
                 .nest(2)
             ]
             .group(),
+            ForeignId(_) => allocator.text("%<foreign>"),
             SealingKey(sym) => allocator.text(format!("%<sealing key: {sym}>")),
             Sealed(_i, _rt, _lbl) => allocator.text("%<sealed>"),
             Annotated(annot, rt) => allocator.atom(rt).append(annot.pretty(allocator)),
@@ -1083,6 +1155,7 @@ where
                 ]
             }
             .group(),
+            ForeignId => allocator.text("ForeignId"),
             Symbol => allocator.text("Symbol"),
             Flat(t) => t.pretty(allocator),
             Var(var) => allocator.as_string(var),
@@ -1155,6 +1228,30 @@ where
             .group(),
             Wildcard(_) => allocator.text("_"),
         }
+    }
+}
+
+impl<'a, D, A> Pretty<'a, D, A> for &MatchBranch
+where
+    D: NickelAllocatorExt<'a, A>,
+    D::Doc: Clone,
+    A: Clone + 'a,
+{
+    fn pretty(self, allocator: &'a D) -> DocBuilder<'a, D, A> {
+        let guard = if let Some(guard) = &self.guard {
+            docs![allocator, allocator.line(), "if", allocator.space(), guard]
+        } else {
+            allocator.nil()
+        };
+
+        docs![
+            allocator,
+            &self.pattern,
+            guard,
+            allocator.space(),
+            "=>",
+            docs![allocator, allocator.line(), self.body.pretty(allocator),].nest(2),
+        ]
     }
 }
 

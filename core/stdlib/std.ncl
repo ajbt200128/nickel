@@ -919,8 +919,7 @@
                   |> blame,
 
             # Outside of lazy data structures, we just use (==)
-            _ =>
-              fun ctr_label value =>
+            _ => fun ctr_label value =>
                 value
                 |> check_typeof_eq ctr_label
                 |> from_predicate ((==) constant) ctr_label,
@@ -2148,6 +2147,27 @@
       "%%
       = fun field r => r."%{field}",
 
+    get_or
+      : forall a. String -> a -> { _ : a } -> a
+      | doc m%%"
+        Returns the field of a record with given name or default value,
+        if there is no such field.
+
+        # Examples
+
+        ```nickel
+        std.record.get_or "tree" 3 { one = 1, two = 2 }
+          => 3
+        std.record.get_or "one" 11 { one = 1, two = 2 }
+          => 1
+        ```
+      "%%
+      = fun field default_value record =>
+        if %has_field% field record then
+          record."%{field}"
+        else
+          default_value,
+
     insert
       : forall a. String -> a -> { _ : a } -> { _ : a }
       | doc m%%"
@@ -3065,6 +3085,44 @@
       = fun s => %enum_from_str% s,
   },
 
+  test = {
+    Assert
+      | doc m%"
+        A contract that checks if its argument is the boolean true.
+
+        # Examples
+
+        ```nickel
+        1 == 2 | std.test.Assert
+         => error: contract broken by a value
+
+        1 == 1 | std.test.Assert
+         => true
+        ```
+        "%
+      = fun label value => if value then true else %blame% label,
+
+    assert_all
+      | Array Assert -> Bool
+      | doc m%"
+        Asserts that all the elements of an array are equal to true. Applies the
+        `std.test.Assert` contract on each element of the given array.
+
+        Evalutes to `true` if all the elements of the array are equal to true,
+        or fails with a contract error otherwise.
+
+        # Example
+
+        ```nickel
+        [ (1 == 2), (1 == 1), (1 == 3) ] |> std.test.assert_all
+         => error: contract broken by a value
+        ```
+        "%
+      # We mostly rely on the contracts to do the work here. We just need to
+      # make sure each element of the array is properly forced.
+      = std.array.all (fun x => x),
+  },
+
   is_number
     : Dyn -> Bool
     | doc m%"
@@ -3187,6 +3245,7 @@
       'Function,
       'Array,
       'Record,
+      'ForeignId,
       'Other
     |]
     | doc m%"

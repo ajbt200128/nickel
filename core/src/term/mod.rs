@@ -27,7 +27,7 @@ use crate::{
     impl_display_from_pretty,
     label::{Label, MergeLabel},
     match_sharedterm,
-    position::TermPos,
+    position::{RawSpan, TermPos},
     typ::{Type, UnboundTypeVariableError},
     typecheck::eq::{contract_eq, type_eq_noenv},
 };
@@ -57,6 +57,9 @@ use std::{
     ops::Deref,
     rc::Rc,
 };
+
+/// The payload of a `Term::ForeignId`.
+pub type ForeignIdPayload = u64;
 
 /// The AST of a Nickel expression.
 ///
@@ -261,6 +264,13 @@ pub enum Term {
     ///
     /// This is a temporary solution, and will be removed in the future.
     Closure(CacheIndex),
+
+    #[serde(skip)]
+    /// An opaque value that cannot be constructed within Nickel code.
+    ///
+    /// This can be used by programs that embed Nickel, as they can inject these opaque
+    /// values into the AST.
+    ForeignId(ForeignIdPayload),
 }
 
 // PartialEq is mostly used for tests, when it's handy to compare something to an expected result.
@@ -604,13 +614,24 @@ impl fmt::Display for MergePriority {
     }
 }
 
+/// A branch of a match expression.
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchBranch {
+    /// The pattern on the left hand side of `=>`.
+    pub pattern: Pattern,
+    /// A potential guard, which is an additional side-condition defined as `if cond`. The value
+    /// stored in this field is the boolean condition itself.
+    pub guard: Option<RichTerm>,
+    /// The body of the branch, on the right hand side of `=>`.
+    pub body: RichTerm,
+}
+
 /// Content of a match expression.
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchData {
     /// Branches of the match expression, where the first component is the pattern on the left hand
     /// side of `=>` and the second component is the body of the branch.
-    pub branches: Vec<(Pattern, RichTerm)>,
-    pub default: Option<RichTerm>,
+    pub branches: Vec<MatchBranch>,
 }
 
 /// A type or a contract together with its corresponding label.
@@ -621,6 +642,19 @@ pub struct LabeledType {
 }
 
 impl LabeledType {
+    /// Create a labeled type from a type and a span, which are the minimal information required to
+    /// instantiate the type and the underlying label. All other values are set to the defaults.
+    pub fn new(typ: Type, span: RawSpan) -> Self {
+        Self {
+            typ: typ.clone(),
+            label: Label {
+                typ: Rc::new(typ),
+                span,
+                ..Default::default()
+            },
+        }
+    }
+
     /// Modify the label's `field_name` field.
     pub fn with_field_name(self, ident: Option<LocIdent>) -> Self {
         LabeledType {
@@ -860,6 +894,7 @@ impl Term {
             Term::SealingKey(_) => Some("SealingKey".to_owned()),
             Term::Sealed(..) => Some("Sealed".to_owned()),
             Term::Annotated(..) => Some("Annotated".to_owned()),
+            Term::ForeignId(_) => Some("ForeignId".to_owned()),
             Term::Let(..)
             | Term::LetPattern(..)
             | Term::App(_, _)
@@ -906,6 +941,7 @@ impl Term {
             | Term::EnumVariant {..}
             | Term::Record(..)
             | Term::Array(..)
+            | Term::ForeignId(_)
             | Term::SealingKey(_) => true,
             Term::Let(..)
             | Term::LetPattern(..)
@@ -963,6 +999,7 @@ impl Term {
             | Term::Str(_)
             | Term::Lbl(_)
             | Term::Enum(_)
+            | Term::ForeignId(_)
             | Term::SealingKey(_) => true,
             Term::Let(..)
             | Term::LetPattern(..)
@@ -1005,6 +1042,7 @@ impl Term {
             | Term::Array(..)
             | Term::Var(..)
             | Term::SealingKey(..)
+            | Term::ForeignId(..)
             | Term::Op1(UnaryOp::StaticAccess(_), _)
             | Term::Op2(BinaryOp::DynAccess(), _, _)
             // Those special cases aren't really atoms, but mustn't be parenthesized because they
@@ -2012,19 +2050,31 @@ impl Traverse<RichTerm> for RichTerm {
             Term::Match(data) => {
                 // The annotation on `map_res` use Result's corresponding trait to convert from
                 // Iterator<Result> to a Result<Iterator>
-                let branches: Result<Vec<(Pattern, RichTerm)>, E> = data
+                let branches: Result<Vec<MatchBranch>, E> = data
                     .branches
                     .into_iter()
                     // For the conversion to work, note that we need a Result<(Ident,RichTerm), E>
-                    .map(|(pat, t)| t.traverse(f, order).map(|t_ok| (pat, t_ok)))
-                    .collect();
+                    .map(
+                        |MatchBranch {
+                             pattern,
+                             guard,
+                             body,
+                         }| {
+                            let guard = guard.map(|cond| cond.traverse(f, order)).transpose()?;
+                            let body = body.traverse(f, order)?;
 
-                let default = data.default.map(|t| t.traverse(f, order)).transpose()?;
+                            Ok(MatchBranch {
+                                pattern,
+                                guard,
+                                body,
+                            })
+                        },
+                    )
+                    .collect();
 
                 RichTerm::new(
                     Term::Match(MatchData {
                         branches: branches?,
-                        default,
                     }),
                     pos,
                 )
@@ -2160,6 +2210,7 @@ impl Traverse<RichTerm> for RichTerm {
             | Term::Import(_)
             | Term::ResolvedImport(_)
             | Term::SealingKey(_)
+            | Term::ForeignId(_)
             | Term::ParseError(_)
             | Term::RuntimeError(_) => None,
             Term::StrChunks(chunks) => chunks.iter().find_map(|ch| {
@@ -2194,11 +2245,19 @@ impl Traverse<RichTerm> for RichTerm {
                             .or_else(|| field.traverse_ref(f, state))
                     })
                 }),
-            Term::Match(data) => data
-                .branches
-                .iter()
-                .find_map(|(_pat, t)| t.traverse_ref(f, state))
-                .or_else(|| data.default.as_ref().and_then(|t| t.traverse_ref(f, state))),
+            Term::Match(data) => data.branches.iter().find_map(
+                |MatchBranch {
+                     pattern: _,
+                     guard,
+                     body,
+                 }| {
+                    if let Some(cond) = guard.as_ref() {
+                        cond.traverse_ref(f, state)?;
+                    }
+
+                    body.traverse_ref(f, state)
+                },
+            ),
             Term::Array(ts, _) => ts.iter().find_map(|t| t.traverse_ref(f, state)),
             Term::OpN(_, ts) => ts.iter().find_map(|t| t.traverse_ref(f, state)),
             Term::Annotated(annot, t) => t
