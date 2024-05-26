@@ -29,25 +29,14 @@ fn test_basic(resource: &str) {
     run(resource);
 }
 
-//eval-okay-attrs.nix: Needs assert
 //eval-okay-baseNameOf.nix:  Needs assert
 //eval-okay-callable-attrs.nix: Nix functors are weird. We probably can
 // replicate them but they're non trivial, and rarely used in NixOS/nixpkgs
 //eval-okay-curpos.nix: Needs __curPos. Non trivial to get the column. Maybe we
 // only provide __curPos.file, since that's all that's used in NixOS/nixpgs
 //eval-okay-delayed-with.nix:  Overflows
-//eval-okay-dynamic-attrs-2.nix: TODO
-//eval-okay-dynamic-attrs-bare.nix: TODO
-//eval-okay-dynamic-attrs.nix: TODO
-//eval-okay-empty-args.nix: TODO
-//eval-okay-functionargs.nix: TODO
 //eval-okay-ind-string.nix: TODO
-//eval-okay-listtoattrs.nix: TODO
-//eval-okay-logic.nix:  needs assert
-//eval-okay-merge-dynamic-attrs.nix: TODO
-//eval-okay-nested-with.nix: TODO
 //eval-okay-null-dynamic-attrs.nix: TODO
-//eval-okay-overrides.nix: TODO
 //eval-okay-path-string-interpolation.nix: TODO
 //eval-okay-patterns.nix: TODO
 //eval-okay-remove.nix:  TODO
@@ -57,7 +46,6 @@ fn test_basic(resource: &str) {
 //eval-okay-scope-6.nix:  TODO
 //eval-okay-scope-7.nix: TODO
 //eval-okay-string.nix: TODO
-//eval-okay-strings-as-attrs-names.nix: TODO
 //eval-okay-symlink-resolution.nix: TODO
 
 // TODO: Implement nix builtins!
