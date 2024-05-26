@@ -34,7 +34,9 @@ fn test_basic(resource: &str) {
 //eval-okay-curpos.nix: Needs __curPos. Non trivial to get the column. Maybe we
 // only provide __curPos.file, since that's all that's used in NixOS/nixpgs
 //eval-okay-delayed-with.nix:  Overflows
-//eval-okay-ind-string.nix: TODO
+//eval-okay-ind-string.nix: Nickel escapes some things differently than Nix,
+// like dollar signs and tabs. Let's just ignore this test for now until we have
+// a concrete example where this matters.
 //eval-okay-null-dynamic-attrs.nix: TODO
 //eval-okay-path-string-interpolation.nix: TODO
 //eval-okay-patterns.nix: TODO
