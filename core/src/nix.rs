@@ -220,6 +220,7 @@ impl ToNickel for rnix::ast::Expr {
                 "true" => Term::Bool(true),
                 "false" => Term::Bool(false),
                 "null" => Term::Null,
+                "baseNameOf" => crate::stdlib::compat::base_name_of().into(),
                 "toString" => crate::stdlib::compat::to_string().into(),
                 id_str => {
                     // Compatibility with the Nix `with` construct. It look if the identifier has

@@ -29,7 +29,6 @@ fn test_basic(resource: &str) {
     run(resource);
 }
 
-//eval-okay-baseNameOf.nix:  Needs assert
 //eval-okay-callable-attrs.nix: Nix functors are weird. We probably can
 // replicate them but they're non trivial, and rarely used in NixOS/nixpkgs
 //eval-okay-curpos.nix: Needs __curPos. Non trivial to get the column. Maybe we

@@ -58,4 +58,13 @@
     assert = fun condition body =>
       let _ = condition | std.test.Assert in
       body,
+
+    base_name_of = fun path =>
+      # If the path is empty, we return an empty string since that's what Nix
+      # does, and std.array.last fails on an empty array.
+      if std.string.length path == 0 then
+        ""
+      else
+        let parts = std.string.split "/" path in
+        std.array.last parts,
   }

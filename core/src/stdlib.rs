@@ -161,4 +161,8 @@ pub mod compat {
     pub fn assert() -> RichTerm {
         mk_compat_access("assert")
     }
+
+    pub fn base_name_of() -> RichTerm {
+        mk_compat_access("base_name_of")
+    }
 }
