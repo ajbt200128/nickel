@@ -26,19 +26,11 @@ fn path_elem_from_nix(attr: NixAttr, state: &State) -> FieldPathElem {
     }
 }
 
-fn path_elem_rt(attr: NixAttr, state: &State) -> RichTerm {
-    match attr {
-        NixAttr::Ident(id) => Term::Str(id.to_string().into()).into(),
-        NixAttr::Str(s) => s.translate(state),
-        NixAttr::Dynamic(d) => d.expr().unwrap().translate(state),
-    }
-}
-
 fn path_rts_from_nix<T>(n: rnix::ast::Attrpath, state: &State) -> T
 where
     T: FromIterator<RichTerm>,
 {
-    n.attrs().map(|a| path_elem_rt(a, state)).collect()
+    n.attrs().map(|a| a.translate(state)).collect()
 }
 
 fn pos_from_nix(node: &dyn AstNode, state: &State) -> TermPos {
@@ -59,6 +51,16 @@ fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<Attrp
         // add the proper path to the env if it's the case.
         kv.attrpath().unwrap().attrs().next().unwrap().to_string()
     }));
+}
+
+impl ToNickel for NixAttr {
+    fn translate(self, state: &State) -> RichTerm {
+        match self {
+            NixAttr::Ident(id) => Term::Str(id.to_string().into()).into(),
+            NixAttr::Str(s) => s.translate(state),
+            NixAttr::Dynamic(d) => d.expr().unwrap().translate(state),
+        }
+    }
 }
 
 impl ToNickel for NixStr {
