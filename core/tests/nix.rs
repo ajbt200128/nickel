@@ -59,8 +59,6 @@ fn test_basic(resource: &str) {
 //eval-okay-string.nix: TODO
 //eval-okay-strings-as-attrs-names.nix: TODO
 //eval-okay-symlink-resolution.nix: TODO
-//eval-okay-tail-call-1.nix: TODO
-//eval-okay-xml.nix: TODO
 
 // TODO: Implement nix builtins!
 //#[test_resources("core/tests/nix/builtins/eval-okay-*.nix")]

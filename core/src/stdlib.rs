@@ -117,41 +117,48 @@ pub mod internals {
 pub mod compat {
     use super::*;
     use crate::mk_app;
-    use crate::term::make::op1;
-    use crate::term::{array::Array, Term, UnaryOp};
+    use crate::term::UnaryOp;
+    use crate::term::{array::Array, Term};
 
-    /// helper function to perform a Nix like update (`//` operator).
-    pub fn update() -> RichTerm {
-        op1(
-            UnaryOp::StaticAccess("update_all".into()),
+    fn mk_compat_access(name: &str) -> RichTerm {
+        mk_term::op1(
+            UnaryOp::StaticAccess(name.into()),
             Term::Var("compat".into()),
         )
     }
 
+    fn mk_std_access(name: &str) -> RichTerm {
+        mk_term::op1(UnaryOp::StaticAccess(name.into()), Term::Var("std".into()))
+    }
+
+    /// helper function to perform a Nix like update (`//` operator).
+    pub fn update() -> RichTerm {
+        mk_compat_access("update_all")
+    }
+
     /// helper function to check if a record has a nested field.
     pub fn has_field_path() -> RichTerm {
-        op1(
-            UnaryOp::StaticAccess("has_field_path".into()),
-            Term::Var("compat".into()),
-        )
+        mk_compat_access("has_field_path")
     }
 
     /// Generate the `with` compatibility Nickel function which may be applied to an `Ident`
     /// you have to pass a list of with records in ordered from outer-most to inner-most one.
     pub fn with(array: Array) -> RichTerm {
         mk_app!(
-            op1(
-                UnaryOp::StaticAccess("with".into()),
-                Term::Var("compat".into()),
-            ),
+            mk_compat_access("with"),
             Term::Array(array, Default::default())
         )
     }
 
     pub fn add() -> RichTerm {
-        op1(
-            UnaryOp::StaticAccess("add".into()),
-            Term::Var("compat".into()),
-        )
+        mk_compat_access("add")
+    }
+
+    pub fn to_string() -> RichTerm {
+        mk_std_access("to_string")
+    }
+
+    pub fn assert() -> RichTerm {
+        mk_compat_access("assert")
     }
 }

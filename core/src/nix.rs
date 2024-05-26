@@ -153,9 +153,15 @@ impl ToNickel for rnix::ast::Expr {
             Expr::Root(n) => n.expr().unwrap().translate(state),
             Expr::Paren(n) => n.expr().unwrap().translate(state),
 
-            // TODO: Will we have an `Assert` contract at some point in the stdlib or do we implement it
-            // in `stdlib::compat`?
-            Expr::Assert(_) => unimplemented!(),
+            // nix's assert always returns a separate body when the assertion
+            // succeeds, not a boolean. Nickel's assertion is simply a contract
+            // so we want to emulate that here. Let's just discard the boolean
+            // result of the statement after asserting and return the 2nd expression
+            Expr::Assert(n) => {
+                let condition = n.condition().unwrap().translate(state);
+                let body = n.body().unwrap().translate(state);
+                mk_app!(crate::stdlib::compat::assert(), condition, body)
+            }
 
             // Some specificity around Nix literals or better said, on how `rnix` parse the
             // literals:
@@ -214,9 +220,7 @@ impl ToNickel for rnix::ast::Expr {
                 "true" => Term::Bool(true),
                 "false" => Term::Bool(false),
                 "null" => Term::Null,
-                "toString" => {
-                    Term::Op1(UnaryOp::StaticAccess("to_string".into()), make::var("std"))
-                }
+                "toString" => crate::stdlib::compat::to_string().into(),
                 id_str => {
                     // Compatibility with the Nix `with` construct. It look if the identifier has
                     // been staticaly defined and if not, it look for it in the `with` broughts

@@ -50,5 +50,12 @@
           then { value = current."%{field}", found = true}
           else acc
         )   {value = null, found = false} envs
-      ) | AssertFound
+      ) | AssertFound,
+
+    # The `assert` function of Nix. It's a simple wrapper around the
+    # `std.test.Assert` function of Nickel since the `assert` function of Nix is
+    # not a contract or anything similar but a simple function.
+    assert = fun condition body =>
+      let _ = condition | std.test.Assert in
+      body,
   }
