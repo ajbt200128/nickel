@@ -194,7 +194,11 @@ impl ToNickel for rnix::ast::Expr {
                 }
                 let fields: Vec<(_, _)> = n
                     .attrpath_values()
-                    .map(|kv| {
+                    .filter_map(|kv| {
+                        //TODO: We should check if the attribute key is null
+                        // somehow, and then not include it. Or alternatively in
+                        // nickel we should parse `{"%{null}": "value"}` and
+                        // just discard the key.
                         let val = kv.value().unwrap().translate(&state);
                         let path: Vec<_> = kv
                             .attrpath()
@@ -202,12 +206,13 @@ impl ToNickel for rnix::ast::Expr {
                             .attrs()
                             .map(|e| path_elem_from_nix(e, &state))
                             .collect();
+                        eprintln!("path: {:?}", path);
                         let field_def = FieldDef {
                             path,
                             field: Field::from(val.clone()),
                             pos: val.pos,
                         };
-                        field_def.elaborate()
+                        Some(field_def.elaborate())
                     })
                     .collect();
                 build_record(fields, Default::default()).into()

@@ -37,7 +37,9 @@ fn test_basic(resource: &str) {
 //eval-okay-ind-string.nix: Nickel escapes some things differently than Nix,
 // like dollar signs and tabs. Let's just ignore this test for now until we have
 // a concrete example where this matters.
-//eval-okay-null-dynamic-attrs.nix: TODO
+//eval-okay-null-dynamic-attrs.nix: Nix allows interpolating nulls into fields,
+// and just simply doesn't set them. we should do something similar in nix or
+// maybe just somehow have a check for nulls in the transpiled code.
 //eval-okay-path-string-interpolation.nix: TODO
 //eval-okay-patterns.nix: TODO
 //eval-okay-remove.nix:  TODO

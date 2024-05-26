@@ -1,0 +1,5 @@
+[
+  ((true) ==
+    (let a = null; in
+     ({ ${a} = true; } == { })))
+]
