@@ -11,8 +11,8 @@ use crate::term::{record::Field, RichTerm, Term};
 use crate::term::{record::RecordData, BinaryOp, UnaryOp};
 use codespan::FileId;
 use rnix::ast::{
-    AstNode, AstToken, Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry,
-    Ident as NixIdent, InterpolPart, Str as NixStr, UnaryOp as NixUniOp,
+    AstNode, Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry, Ident as NixIdent,
+    InterpolPart, Str as NixStr, UnaryOp as NixUniOp,
 };
 use rowan::ast::AstChildren;
 use std::collections::HashMap;
@@ -63,22 +63,27 @@ impl ToNickel for NixAttr {
     }
 }
 
+fn str_chunks_from_interpol<T: ToString>(interpols: Vec<InterpolPart<T>>, state: &State) -> Term {
+    Term::StrChunks(
+        interpols
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| match c {
+                InterpolPart::Literal(s) => crate::term::StrChunk::Literal(s.to_string()),
+                InterpolPart::Interpolation(interp) => {
+                    crate::term::StrChunk::Expr(interp.expr().unwrap().translate(state), i)
+                }
+            })
+            // Parts come in reverse order
+            .rev()
+            .collect(),
+    )
+}
+
 impl ToNickel for NixStr {
     fn translate(self, state: &State) -> RichTerm {
         let pos = pos_from_nix(&self, state);
-        let chunks = Term::StrChunks(
-            self.normalized_parts()
-                .into_iter()
-                .enumerate()
-                .map(|(i, c)| match c {
-                    InterpolPart::Literal(s) => crate::term::StrChunk::Literal(s.to_string()),
-                    InterpolPart::Interpolation(interp) => {
-                        crate::term::StrChunk::Expr(interp.expr().unwrap().translate(state), i)
-                    }
-                })
-                .rev() // parts come in reverse order for some reason
-                .collect(),
-        );
+        let chunks = str_chunks_from_interpol(self.normalized_parts(), state);
 
         RichTerm::new(chunks, pos)
     }
@@ -466,18 +471,13 @@ impl ToNickel for rnix::ast::Expr {
             Expr::Path(n) => {
                 // lets just add the path as a string since nickel doesn't have a path syntax
                 // and just uses strings
-                let parts = n.parts().map(|p| {
-                    if let InterpolPart::Literal(s) = p {
-                        s.syntax().text().to_string()
-                    } else {
-                        // rnix doesn't seem to expect to be able to parse this so we shouldn't either
-                        unreachable!("unexpected interpol {:?}", p)
-                    }
-                });
+                let parts = n.parts().collect::<Vec<_>>();
+
                 // join with "/" to have a string representation of the path.
                 // TODO: Do we support windows paths? Probably not...
-                let path = parts.collect::<Vec<_>>().join("/");
-                Term::Str(path.into()).into()
+                //let path = parts.collect::<Vec<_>>().join("/");
+                let chunks = str_chunks_from_interpol(parts, state);
+                RichTerm::new(chunks, pos)
             }
         }
         // set the position in the AST to try to have some sort of debuging support.
