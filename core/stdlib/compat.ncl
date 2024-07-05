@@ -67,4 +67,9 @@
       else
         let parts = std.string.split "/" path in
         std.array.last parts,
+
+    remove_attrs = fun record attrs_list =>
+      std.array.fold_left (fun acc attr =>
+        std.record.remove attr acc
+      ) record attrs_list,
   }

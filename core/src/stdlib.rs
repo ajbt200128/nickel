@@ -165,4 +165,8 @@ pub mod compat {
     pub fn base_name_of() -> RichTerm {
         mk_compat_access("base_name_of")
     }
+
+    pub fn remove_attrs() -> RichTerm {
+        mk_compat_access("remove_attrs")
+    }
 }

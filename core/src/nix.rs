@@ -292,6 +292,7 @@ impl ToNickel for rnix::ast::Expr {
                 "null" => Term::Null,
                 "baseNameOf" => crate::stdlib::compat::base_name_of().into(),
                 "toString" => crate::stdlib::compat::to_string().into(),
+                "removeAttrs" => crate::stdlib::compat::remove_attrs().into(),
                 id_str => {
                     // Compatibility with the Nix `with` construct. It look if the identifier has
                     // been staticaly defined and if not, it look for it in the `with` broughts
