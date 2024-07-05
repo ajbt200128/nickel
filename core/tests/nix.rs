@@ -41,7 +41,6 @@ fn test_basic(resource: &str) {
 // and just simply doesn't set them. we should do something similar in nix or
 // maybe just somehow have a check for nulls in the transpiled code.
 //eval-okay-patterns.nix: TODO
-//eval-okay-scope-1.nix: TODO
 //eval-okay-scope-3.nix: TODO
 //eval-okay-scope-4.nix:  TODO
 //eval-okay-scope-6.nix:  TODO

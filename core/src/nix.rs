@@ -2,9 +2,10 @@ use crate::cache::Cache;
 use crate::conversion::State;
 pub use crate::conversion::ToNickel;
 use crate::identifier::LocIdent;
+use crate::label::MergeLabel;
 use crate::mk_app;
-use crate::parser::utils::{mk_span, FieldPathElem};
-use crate::position::TermPos;
+use crate::parser::utils::{build_record, mk_span, FieldDef, FieldPathElem};
+use crate::position::{RawSpan, TermPos};
 use crate::term::make::{self, if_then_else};
 use crate::term::TypeAnnotation;
 use crate::term::{record::Field, RichTerm, Term};
@@ -33,10 +34,13 @@ where
     n.attrs().map(|a| a.translate(state)).collect()
 }
 
-fn pos_from_nix(node: &dyn AstNode, state: &State) -> TermPos {
+fn span_from_nix(node: &dyn AstNode, state: &State) -> RawSpan {
     let pos = node.syntax().text_range();
-    let span = mk_span(state.file_id, pos.start().into(), pos.end().into());
-    TermPos::Original(span)
+    mk_span(state.file_id, pos.start().into(), pos.end().into())
+}
+
+fn pos_from_nix(node: &dyn AstNode, state: &State) -> TermPos {
+    TermPos::Original(span_from_nix(node, state))
 }
 
 fn id_from_nix(id: NixIdent, state: &State) -> LocIdent {
@@ -51,16 +55,6 @@ fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<Attrp
         // add the proper path to the env if it's the case.
         kv.attrpath().unwrap().attrs().next().unwrap().to_string()
     }));
-}
-
-impl ToNickel for NixAttr {
-    fn translate(self, state: &State) -> RichTerm {
-        match self {
-            NixAttr::Ident(id) => Term::Str(id.to_string().into()).into(),
-            NixAttr::Str(s) => s.translate(state),
-            NixAttr::Dynamic(d) => d.expr().unwrap().translate(state),
-        }
-    }
 }
 
 fn str_chunks_from_interpol<T: ToString>(interpols: Vec<InterpolPart<T>>, state: &State) -> Term {
@@ -78,6 +72,43 @@ fn str_chunks_from_interpol<T: ToString>(interpols: Vec<InterpolPart<T>>, state:
             .rev()
             .collect(),
     )
+}
+
+fn record_field_from_attrpath_value(kv: AttrpathValue, state: &State) -> (FieldPathElem, Field) {
+    let path = kv
+        .attrpath()
+        .unwrap()
+        .attrs()
+        .map(|e| path_elem_from_nix(e, state))
+        .collect();
+    let value = kv.value().unwrap().translate(state);
+    let pos = pos_from_nix(&kv, state);
+    (FieldDef {
+        path,
+        field: Field::from(value),
+        pos,
+    })
+    .elaborate()
+}
+
+impl ToNickel for Vec<AttrpathValue> {
+    fn translate(self, state: &State) -> RichTerm {
+        let fields: Vec<_> = self
+            .into_iter()
+            .map(|kv| record_field_from_attrpath_value(kv, state))
+            .collect();
+        build_record(fields, Default::default()).into()
+    }
+}
+
+impl ToNickel for NixAttr {
+    fn translate(self, state: &State) -> RichTerm {
+        match self {
+            NixAttr::Ident(id) => Term::Str(id.to_string().into()).into(),
+            NixAttr::Str(s) => s.translate(state),
+            NixAttr::Dynamic(d) => d.expr().unwrap().translate(state),
+        }
+    }
 }
 
 impl ToNickel for NixStr {
@@ -193,36 +224,63 @@ impl ToNickel for rnix::ast::Expr {
             )
             .into(),
             Expr::AttrSet(n) => {
-                use crate::parser::utils::{build_record, FieldDef};
                 let mut state = state.clone();
-                // check if the attrset is recursive and fill the environment with the fields if so
-                if n.rec_token().is_some() {
-                    extend_env_with_attrset(&mut state, n.attrpath_values());
-                }
-                let fields: Vec<(_, _)> = n
-                    .attrpath_values()
-                    .filter_map(|kv| {
-                        //TODO: We should check if the attribute key is null
-                        // somehow, and then not include it. Or alternatively in
-                        // nickel we should parse `{"%{null}": "value"}` and
-                        // just discard the key.
-                        let val = kv.value().unwrap().translate(&state);
-                        let path: Vec<_> = kv
-                            .attrpath()
-                            .unwrap()
-                            .attrs()
-                            .map(|e| path_elem_from_nix(e, &state))
+                // check if the attrset is recursive
+                let (attrpath_values, skipped_attrpath_values) = match n.rec_token() {
+                    // check if the attrset is recursive and fill the environment with the fields if so
+                    Some(_) => {
+                        extend_env_with_attrset(&mut state, n.attrpath_values());
+                        (n.attrpath_values().collect(), vec![])
+                    }
+                    // If it isn't, then we partition out all the record fields
+                    // who will shadow existing variables. Then we can create a
+                    // separate record for those fields.
+                    //
+                    // For example:
+                    // nix
+                    //   ((x: { x = 1; y = x; }) 2) == { x = 1; y = 2; }
+                    // translates to
+                    // nickel
+                    //   (fun x => { x = 1, y = x }) 3 == { x = 1, y = 1, }
+                    // but by splitting it out we get
+                    // nickel
+                    //   (fun x => { y = x } & { x = 1 }) 2 == { x = 1, y = 2, }
+                    None => {
+                        // `partition` doesn't work here for some reason
+                        let vals: Vec<_> = n
+                            .attrpath_values()
+                            .filter(|kv| {
+                                let id = kv.attrpath().unwrap().attrs().next().unwrap().to_string();
+                                !state.env.contains(&id)
+                            })
                             .collect();
-                        eprintln!("path: {:?}", path);
-                        let field_def = FieldDef {
-                            path,
-                            field: Field::from(val.clone()),
-                            pos: val.pos,
-                        };
-                        Some(field_def.elaborate())
-                    })
-                    .collect();
-                build_record(fields, Default::default()).into()
+                        let skipped_vals: Vec<_> = n
+                            .attrpath_values()
+                            .filter(|kv| {
+                                let id = kv.attrpath().unwrap().attrs().next().unwrap().to_string();
+                                state.env.contains(&id)
+                            })
+                            .collect();
+                        (vals, skipped_vals)
+                    }
+                };
+                let initial_record = attrpath_values.translate(&state);
+                // When nix attr sets are not recursive, they always set values
+                // to what's in scope.
+                if skipped_attrpath_values.is_empty() {
+                    initial_record
+                } else {
+                    let skipped_record = skipped_attrpath_values.translate(&state);
+                    let span = span_from_nix(&n, &state);
+                    make::op2(
+                        BinaryOp::Merge(MergeLabel {
+                            span,
+                            kind: crate::label::MergeKind::Standard,
+                        }),
+                        initial_record,
+                        skipped_record,
+                    )
+                }
             }
 
             // In nix it's allowed to define vars named `true`, `false` or `null`.
