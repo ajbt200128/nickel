@@ -48,8 +48,18 @@ fn pos_from_nix(node: &dyn AstNode, state: &State) -> TermPos {
 }
 
 fn id_from_nix(id: NixIdent, state: &State) -> LocIdent {
-    let pos = pos_from_nix(&id, state);
-    LocIdent::new_with_pos(id.to_string(), pos)
+    // Check we don't try to redefine builtin values. Even if it's possible in Nix,
+    // we don't suport it.
+    match id.to_string().as_str() {
+        "true" | "false" | "null" => {
+            panic!("`{id}` is forbidden. Can not redefine `true`, `false` or `null`")
+        }
+        s => {
+            let pos = pos_from_nix(&id, &state);
+            // give a position to the identifier.
+            LocIdent::new_with_pos(s, pos)
+        }
+    }
 }
 
 fn extend_env_with_attrset(state: &mut State, attrpath_values: AstChildren<AttrpathValue>) {
@@ -318,26 +328,14 @@ impl ToNickel for rnix::ast::Expr {
             Expr::LetIn(n) => {
                 use crate::term::pattern::*;
                 let mut patterns_vec = Vec::new();
-                let mut fields = HashMap::new();
                 let mut state = state.clone();
                 extend_env_with_attrset(&mut state, n.attrpath_values());
                 for kv in n.attrpath_values() {
                     // In `let` blocks, the key is supposed to be a single ident so `Path` exactly one
                     // element.
-                    let id = kv.attrpath().unwrap().attrs().next().unwrap();
-                    // Check we don't try to redefine builtin values. Even if it's possible in Nix,
-                    // we don't suport it.
-                    let id: LocIdent = match id.to_string().as_str() {
-                        "true" | "false" | "null" => panic!(
-                            "`let {id}` is forbidden. Can not redefine `true`, `false` or `null`"
-                        ),
-                        s => {
-                            let pos = pos_from_nix(&id, &state);
-                            // give a position to the identifier.
-                            LocIdent::new_with_pos(s, pos)
-                        }
-                    };
-                    let rt = kv.value().unwrap().translate(&state);
+                    let ident = kv.attrpath().unwrap().attrs().next().unwrap();
+                    let pos = pos_from_nix(&ident, &state);
+                    let id = LocIdent::new_with_pos(ident.to_string(), pos);
                     let annotation = TypeAnnotation {
                         typ: None,
                         contracts: vec![],
@@ -357,8 +355,8 @@ impl ToNickel for rnix::ast::Expr {
                         pos: id.pos,
                     };
                     patterns_vec.push(field_pattern);
-                    fields.insert(id, rt);
                 }
+                let attr_vec: Vec<AttrpathValue> = n.attrpath_values().collect::<Vec<_>>();
                 let record_pattern = RecordPattern {
                     patterns: patterns_vec,
                     tail: TailPattern::Empty,
@@ -372,7 +370,7 @@ impl ToNickel for rnix::ast::Expr {
 
                 make::let_pat(
                     pattern,
-                    Term::RecRecord(RecordData::with_field_values(fields), Vec::new(), None),
+                    attr_vec.translate(&state),
                     n.body().unwrap().translate(&state),
                 )
             }
