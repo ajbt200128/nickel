@@ -40,9 +40,6 @@ fn test_basic(resource: &str) {
 //eval-okay-null-dynamic-attrs.nix: Nix allows interpolating nulls into fields,
 // and just simply doesn't set them. we should do something similar in nix or
 // maybe just somehow have a check for nulls in the transpiled code.
-//eval-okay-patterns.nix: TODO
-//eval-okay-scope-4.nix:  TODO
-//eval-okay-scope-6.nix:  TODO
 
 // TODO: Implement nix builtins!
 //#[test_resources("core/tests/nix/builtins/eval-okay-*.nix")]
