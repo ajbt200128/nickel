@@ -2,21 +2,25 @@ use crate::cache::Cache;
 use crate::conversion::State;
 pub use crate::conversion::ToNickel;
 use crate::identifier::LocIdent;
-use crate::label::MergeLabel;
+use crate::label::{Label, MergeLabel};
 use crate::mk_app;
-use crate::parser::utils::{build_record, mk_span, FieldDef, FieldPathElem};
+use crate::parser::utils::{build_record, mk_span, AttachTerm, FieldDef, FieldPathElem};
 use crate::position::{RawSpan, TermPos};
 use crate::term::make::{self, if_then_else};
-use crate::term::TypeAnnotation;
+use crate::term::record::{FieldMetadata, RecordAttrs};
 use crate::term::{record::Field, RichTerm, Term};
 use crate::term::{record::RecordData, BinaryOp, UnaryOp};
+use crate::term::{LabeledType, MergePriority, TypeAnnotation};
+use crate::typ::{Type, TypeF};
 use codespan::FileId;
+use indexmap::IndexMap;
 use rnix::ast::{
     AstNode, Attr as NixAttr, AttrpathValue, BinOp as NixBinOp, HasEntry, Ident as NixIdent,
     InterpolPart, Str as NixStr, UnaryOp as NixUniOp,
 };
 use rowan::ast::AstChildren;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 pub type NixParseError = rnix::parser::ParseError;
 fn path_elem_from_nix(attr: NixAttr, state: &State) -> FieldPathElem {
@@ -405,15 +409,60 @@ impl ToNickel for rnix::ast::Expr {
                     rnix::ast::Param::Pattern(pat) => {
                         // TODO: Does not support if args are empty, e.g. nix`{}: 1`
                         use crate::term::pattern::*;
+                        // Pattern alias i.e. args@{x,y,z}:
+                        let alias = match pat.pat_bind() {
+                            Some(bind) => Some(id_from_nix(bind.ident().unwrap(), &state)),
+                            None => None,
+                        };
+
+                        // Pattern allows additional entries i.e. {x,y,z,...}:
+                        let open = pat.ellipsis_token().is_some();
+
+                        // So nix allows recursive pattern matching in lambda
+                        // patterns:
+                        //   f = {x ? y, y ? z, z ? x}
+                        // But nickel does not, and we've decided that nickel
+                        // doesn't need that functionality for now as it would
+                        // break some things.
+                        // So instead what we do here is when we encounter a
+                        // lambda we set the defaults via a contract on the
+                        // lambda instead of the normal approach, as contracts
+                        // allow this recursive default property we want
+                        // The drawback is that if a user alias's the pattern in
+                        // the nix code, then uses that alias IN the pattern
+                        // defaults, we will translate it, but it the alias in
+                        // the default will be undefined
+                        let mut contract_fields = IndexMap::new();
+
+                        let pos = pos_from_nix(&pat, &state);
+
                         let patterns = pat
                             .pat_entries()
                             .map(|e| {
                                 let e_ident = e.ident().unwrap();
                                 state.env.insert(e_ident.to_string());
-                                // manage default values:
-                                let default =
-                                    e.default().and_then(|def| Some(def.translate(&state)));
                                 let id = id_from_nix(e_ident, &state);
+
+                                // Create a field whose default is that of the
+                                // nix default
+                                let metadata = FieldMetadata {
+                                    doc: None,
+                                    annotation: TypeAnnotation {
+                                        typ: None,
+                                        contracts: vec![],
+                                    },
+                                    opt: false,
+                                    not_exported: false,
+                                    priority: MergePriority::Bottom,
+                                };
+                                let value = e.default().map(|d| d.translate(&state));
+                                let field = Field {
+                                    value,
+                                    metadata,
+                                    pending_contracts: vec![],
+                                };
+                                contract_fields.insert(id, field.into());
+
                                 let annotation = TypeAnnotation {
                                     typ: None,
                                     contracts: vec![],
@@ -427,25 +476,70 @@ impl ToNickel for rnix::ast::Expr {
                                 FieldPattern {
                                     matched_id: id,
                                     annotation,
-                                    default,
+                                    // Handled by contract_fields
+                                    default: None,
                                     pattern,
                                     pos: id.pos,
                                 }
                             })
                             .collect();
+                        // This record is what the contract that provides the
+                        // defaults will be
+                        let contract_record = Term::RecRecord(
+                            RecordData::new(
+                                contract_fields,
+                                RecordAttrs {
+                                    open,
+                                    closurized: false,
+                                },
+                                Default::default(),
+                            ),
+                            vec![],
+                            None,
+                        );
+                        // Construct the type of the lambda:
+                        // {param1 | default = default1, [...]} -> Dyn
+                        let typ_f = TypeF::Arrow(
+                            Box::new(Type::from(TypeF::Flat(contract_record.into()))),
+                            Box::new(Type::from(TypeF::Dyn)),
+                        );
+                        let typ = Type::from(typ_f);
+                        // Create annotation, so | {param1 | default = default1, [...]} -> Dyn
+                        let annotation = TypeAnnotation {
+                            typ: None,
+                            contracts: vec![LabeledType {
+                                typ: typ.clone(),
+                                label: Label {
+                                    typ: Rc::new(typ),
+                                    span: span_from_nix(&n, &state),
+                                    ..Default::default()
+                                },
+                            }],
+                        };
+                        // Now let's create the actual lambda
 
-                        let pos = pos_from_nix(&pat, &state);
+                        // Create the pattern
                         let record_pattern = RecordPattern {
                             patterns,
-                            tail: TailPattern::Empty,
+                            tail: if open {
+                                TailPattern::Open
+                            } else {
+                                TailPattern::Empty
+                            },
                             pos,
                         };
                         let pattern = Pattern {
                             data: PatternData::Record(record_pattern),
-                            alias: None,
+                            alias,
                             pos,
                         };
-                        Term::FunPattern(pattern, n.body().unwrap().translate(&state))
+
+                        // Create the lambda
+                        let fun = Term::FunPattern(pattern, n.body().unwrap().translate(&state));
+                        // attach the annotation so now we have
+                        //   (fun {param1, param2, [...]} => body)
+                        //     | {param1 | default = default1, [...]}
+                        annotation.attach_term(fun.into()).into()
                     }
                 }
             }

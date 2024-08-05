@@ -192,6 +192,7 @@ impl<EC: EvalCache> ReplImpl<EC> {
 
         match term {
             ExtendedTerm::RichTerm(t) => {
+                eprintln!("t: {:#?}", t);
                 let t = self.prepare(None, t)?;
                 Ok(eval_function(
                     &mut self.vm,

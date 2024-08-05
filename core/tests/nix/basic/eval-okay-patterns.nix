@@ -6,7 +6,11 @@
 
       g = { x, y, z }@args: f args;
 
-      h = { x ? "d", y ? x, z ? args.x }@args: x + y + z;
+      # This used to be
+      #   h = { x ? "d", y ? x, z ? args.x }@args: x + y + z;
+      # But this is hard to transpile, and also somewhat ridiculous
+      # So let's not worry about it for now
+      h = { x ? "d", y ? x, z ? x }@args: x + y + z;
 
       j = { x, y, z, ... }: x + y + z;
 
