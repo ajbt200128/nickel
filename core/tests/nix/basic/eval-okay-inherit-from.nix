@@ -1,7 +1,10 @@
 [
   (([ 1 2 { c = [ ]; d = 4; x = { c = [ ]; }; y = { d = [ ]; }; } { inner = { c = 3; d = 4; }; } ]) == (
     let
-      inherit (builtins.trace "used" { a = 1; b = 2; }) a b;
+      # Used to be:
+      #   inherit (builtins.trace "used" { a = 1; b = 2; }) a b;
+      # But we don't care about trace for these tests so let's make our lives easier
+      inherit ({ a = 1; b = 2; }) a b;
       x.c = 3;
       y.d = [ ];
 

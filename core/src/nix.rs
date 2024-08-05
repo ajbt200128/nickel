@@ -142,7 +142,6 @@ impl ToNickel for NixBinOp {
         let rhs = self.rhs().unwrap().translate(state);
         match self.operator().unwrap() {
             Concat => make::op2(BinaryOp::ArrayConcat(), lhs, rhs),
-            // TODO: the Nix `//` operator.
             Update => mk_app!(crate::stdlib::compat::update(), lhs, rhs),
 
             // Use a compatibility function to be able to merge strings with the same operator used
